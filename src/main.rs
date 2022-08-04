@@ -16,6 +16,8 @@ mod dbus_mpris;
 mod error;
 mod main_loop;
 mod process;
+#[cfg(feature = "rest_api")]
+mod rest_api;
 mod setup;
 mod utils;
 

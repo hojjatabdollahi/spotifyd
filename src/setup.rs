@@ -138,6 +138,7 @@ pub(crate) fn initial_state(config: config::SpotifydConfig) -> main_loop::MainLo
             player_event_channel: None,
             player_event_program: config.onevent,
             dbus_mpris_server: None,
+            rest_server: None,
         },
         player_config,
         session_config,
@@ -148,8 +149,11 @@ pub(crate) fn initial_state(config: config::SpotifydConfig) -> main_loop::MainLo
         device_type,
         autoplay,
         use_mpris: config.use_mpris,
+        use_rest: config.use_rest,
         #[cfg(feature = "dbus_mpris")]
         mpris_event_tx: None,
+        #[cfg(feature = "rest_api")]
+        rest_event_tx: None,
     }
 }
 

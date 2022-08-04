@@ -1,6 +1,8 @@
 #[cfg(feature = "dbus_mpris")]
 use crate::dbus_mpris::DbusServer;
 use crate::process::{spawn_program_on_event, Child};
+#[cfg(feature = "rest_api")]
+use crate::rest_api::RestServer;
 use futures::{self, Future, Stream, StreamExt};
 use librespot_connect::{discovery::DiscoveryStream, spirc::Spirc};
 use librespot_core::session::SessionError;
@@ -21,7 +23,7 @@ use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-#[cfg(feature = "dbus_mpris")]
+#[cfg(any(feature = "dbus_mpris", feature = "rest_api"))]
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -61,6 +63,7 @@ pub struct SpotifydState {
     pub player_event_channel: Option<Pin<Box<dyn Stream<Item = PlayerEvent>>>>,
     pub player_event_program: Option<String>,
     pub dbus_mpris_server: Option<Pin<Box<dyn Future<Output = ()>>>>,
+    pub rest_server: Option<Pin<Box<dyn Future<Output = ()>>>>,
 }
 
 #[cfg(feature = "dbus_mpris")]
@@ -72,6 +75,22 @@ fn new_dbus_server(
     event_rx: UnboundedReceiver<PlayerEvent>,
 ) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
     Some(Box::pin(DbusServer::new(
+        session,
+        spirc,
+        device_name,
+        event_rx,
+    )))
+}
+
+#[cfg(feature = "rest_api")]
+#[allow(clippy::unnecessary_wraps)]
+fn new_rest_server(
+    session: Session,
+    spirc: Arc<Spirc>,
+    device_name: String,
+    event_rx: UnboundedReceiver<PlayerEvent>,
+) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
+    Some(Box::pin(RestServer::new(
         session,
         spirc,
         device_name,
@@ -96,6 +115,10 @@ pub(crate) struct MainLoopState {
     pub(crate) use_mpris: bool,
     #[cfg(feature = "dbus_mpris")]
     pub(crate) mpris_event_tx: Option<UnboundedSender<PlayerEvent>>,
+    #[allow(dead_code)]
+    pub(crate) use_rest: bool,
+    #[cfg(feature = "rest_api")]
+    pub(crate) rest_event_tx: Option<UnboundedSender<PlayerEvent>>,
 }
 
 impl Future for MainLoopState {
@@ -137,6 +160,10 @@ impl Future for MainLoopState {
                         if let Some(ref tx) = self.mpris_event_tx {
                             tx.send(event.clone()).unwrap();
                         }
+                        #[cfg(feature = "rest_api")]
+                        if let Some(ref tx) = self.rest_event_tx {
+                            tx.send(event.clone()).unwrap();
+                        }
                         if let Some(ref cmd) = self.spotifyd_state.player_event_program {
                             match spawn_program_on_event(&self.shell, cmd, event) {
                                 Ok(child) => self.running_event_program = Some(child),
@@ -148,6 +175,10 @@ impl Future for MainLoopState {
             }
 
             if let Some(ref mut fut) = self.spotifyd_state.dbus_mpris_server {
+                let _ = fut.as_mut().poll(cx);
+            }
+
+            if let Some(ref mut fut) = self.spotifyd_state.rest_server {
                 let _ = fut.as_mut().poll(cx);
             }
 
@@ -191,8 +222,20 @@ impl Future for MainLoopState {
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                     self.mpris_event_tx = Some(tx);
                     self.spotifyd_state.dbus_mpris_server = new_dbus_server(
-                        session,
-                        shared_spirc,
+                        session.clone(),
+                        shared_spirc.clone(),
+                        self.spotifyd_state.device_name.clone(),
+                        rx,
+                    );
+                }
+
+                #[cfg(feature = "rest_api")]
+                if self.use_rest {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    self.rest_event_tx = Some(tx);
+                    self.spotifyd_state.rest_server = new_rest_server(
+                        session.clone(),
+                        shared_spirc.clone(),
                         self.spotifyd_state.device_name.clone(),
                         rx,
                     );
