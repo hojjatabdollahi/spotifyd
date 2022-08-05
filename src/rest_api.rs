@@ -10,6 +10,7 @@ use librespot_core::{
 use librespot_playback::player::PlayerEvent;
 use log::info;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use rspotify::spotify::model::context::FullPlayingContext;
 use rspotify::spotify::{
     client::Spotify,
     model::search::SearchTracks,
@@ -132,6 +133,10 @@ async fn shutdown() -> Json<Value> {
     Json(json!({"res": "done"}))
 }
 
+async fn return_playback(val: Option<FullPlayingContext>) -> Json<Value> {
+    Json(json!(val))
+}
+
 async fn search(query: String, mv_api_token: RspotifyToken) -> Json<Value> {
     let sp = create_spotify_api(&mv_api_token);
     let res = sp.search_track(&query, 6, 0, None).unwrap();
@@ -199,7 +204,7 @@ async fn create_rest_server(
             }),
         )
         .route(
-            "/play",
+            "/play_pause",
             routing::get({
                 let local_spirc = Arc::clone(&spirc);
                 move || {
@@ -256,6 +261,14 @@ async fn create_rest_server(
             }),
         )
         .route(
+            "/player_status",
+            routing::get({
+                let mv_api_token = api_token.clone();
+                let sp = create_spotify_api(&mv_api_token);
+                move || return_playback(sp.current_playback(None).unwrap())
+            }),
+        )
+        .route(
             "/transfer_playback",
             routing::get({
                 let mv_device_name = device_name.clone();
@@ -283,7 +296,7 @@ async fn create_rest_server(
             }),
         )
         .route(
-            "/OpenUri",
+            "/open_uri",
             routing::post({
                 let mv_device_name = device_name.clone();
                 let mv_api_token = api_token.clone();
