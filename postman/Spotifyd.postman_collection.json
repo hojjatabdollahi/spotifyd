@@ -1,0 +1,299 @@
+{
+	"info": {
+		"_postman_id": "00c23e62-fd4a-498a-8cae-55cbfb2fb560",
+		"name": "Spotifyd",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "7191033"
+	},
+	"item": [
+		{
+			"name": "Song Control",
+			"item": [
+				{
+					"name": "Play Pause",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{local_spotifyd_url}}/play_pause",
+							"host": [
+								"{{local_spotifyd_url}}"
+							],
+							"path": [
+								"play_pause"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Next",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{local_spotifyd_url}}/next",
+							"host": [
+								"{{local_spotifyd_url}}"
+							],
+							"path": [
+								"next"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Previous",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{local_spotifyd_url}}/previous",
+							"host": [
+								"{{local_spotifyd_url}}"
+							],
+							"path": [
+								"previous"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Seek",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"pos\": 3000}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{local_spotifyd_url}}/seek",
+							"host": [
+								"{{local_spotifyd_url}}"
+							],
+							"path": [
+								"seek"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Repeat",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\"val\": \"track\"}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{local_spotifyd_url}}/repeat",
+					"host": [
+						"{{local_spotifyd_url}}"
+					],
+					"path": [
+						"repeat"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Shuffle",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\"val\": true}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{local_spotifyd_url}}/shuffle",
+					"host": [
+						"{{local_spotifyd_url}}"
+					],
+					"path": [
+						"shuffle"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Shutdown",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{local_spotifyd_url}}/shutdown",
+					"host": [
+						"{{local_spotifyd_url}}"
+					],
+					"path": [
+						"shutdown"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Transfer Playback",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{local_spotifyd_url}}/transfer_playback",
+					"host": [
+						"{{local_spotifyd_url}}"
+					],
+					"path": [
+						"transfer_playback"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Player Status",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{local_spotifyd_url}}/player_status",
+					"host": [
+						"{{local_spotifyd_url}}"
+					],
+					"path": [
+						"player_status"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Volume",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\"vol\": 100}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{local_spotifyd_url}}/volume",
+					"host": [
+						"{{local_spotifyd_url}}"
+					],
+					"path": [
+						"volume"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Category's Playlists",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\"val\": \"0JQ5DAqbMKFIVNxQgRNSg0\"}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{local_spotifyd_url}}/get_category_playlist",
+					"host": [
+						"{{local_spotifyd_url}}"
+					],
+					"path": [
+						"get_category_playlist"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Search",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\"keyword\":\"always frank sinatra\"}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{local_spotifyd_url}}/search",
+					"host": [
+						"{{local_spotifyd_url}}"
+					],
+					"path": [
+						"search"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "OpenUri",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\"uri\": \"spotify:album:2hK70fCNOlYgTg0sQMzPbj\"}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{local_spotifyd_url}}/open_uri",
+					"host": [
+						"{{local_spotifyd_url}}"
+					],
+					"path": [
+						"open_uri"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}

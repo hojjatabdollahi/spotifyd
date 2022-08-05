@@ -12,6 +12,7 @@ use librespot_playback::player::PlayerEvent;
 use log::info;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::StatusCode;
+use rspotify::spotify::senum::RepeatState;
 use rspotify::spotify::{
     client::Spotify, model::offset::for_position, oauth2::TokenInfo as RspotifyToken,
     util::datetime_to_timestamp,
@@ -169,7 +170,7 @@ impl IntoResponse for AppError {
     }
 }
 
-async fn return_playback(api_token: RspotifyToken) -> Result<Json<Value>, AppError> {
+async fn playback(api_token: RspotifyToken) -> Result<Json<Value>, AppError> {
     let mv_api_token = api_token.clone();
     let sp = create_spotify_api(&mv_api_token);
     let val = sp.current_playback(None).map_err(|_| SError::StatusError)?;
@@ -177,6 +178,58 @@ async fn return_playback(api_token: RspotifyToken) -> Result<Json<Value>, AppErr
         Some(val) => Ok(Json(json!(val))),
         None => Err(AppError::Playback(SError::StatusError)),
     }
+}
+
+async fn shuffle(
+    state: bool,
+    device_name: String,
+    api_token: RspotifyToken,
+) -> Result<Json<Value>, AppError> {
+    let mv_api_token = api_token.clone();
+    let sp = create_spotify_api(&mv_api_token);
+    let device_id = get_device_id(device_name.clone(), api_token.clone());
+    info!("{device_id:?}");
+    sp.shuffle(state, device_id)
+        .map_err(|_| SError::StatusError)?;
+    Ok(Json(json!({"res": "done"})))
+}
+
+async fn get_category_playlist(
+    category_id: String,
+    device_name: String,
+    api_token: RspotifyToken,
+) -> Result<Json<Value>, AppError> {
+    let mv_api_token = api_token.clone();
+    let sp = create_spotify_api(&mv_api_token);
+    let device_id = get_device_id(device_name.clone(), api_token.clone());
+    info!("{device_id:?}");
+
+    let res = sp
+        .get_category_playlist(category_id, None, Some(30), Some(0))
+        .map_err(|e| {
+            info!("{e:?}");
+            SError::StatusError
+        })?;
+    Ok(Json(json!(res)))
+}
+async fn repeat(
+    payload_state: String,
+    device_name: String,
+    api_token: RspotifyToken,
+) -> Result<Json<Value>, AppError> {
+    let mv_api_token = api_token.clone();
+    let sp = create_spotify_api(&mv_api_token);
+    let device_id = get_device_id(device_name.clone(), api_token.clone());
+    info!("{device_id:?}");
+    let state = match payload_state.as_str() {
+        "track" => RepeatState::Track,
+        "context" => RepeatState::Context,
+        "off" => RepeatState::Off,
+        _ => RepeatState::Off,
+    };
+    sp.repeat(state, device_id)
+        .map_err(|_| SError::StatusError)?;
+    Ok(Json(json!({"res": "done"})))
 }
 
 async fn search(query: String, mv_api_token: RspotifyToken) -> Json<Value> {
@@ -206,6 +259,16 @@ struct VolumeItem {
 #[derive(Deserialize)]
 struct SeekItem {
     pos: u32,
+}
+
+#[derive(Deserialize)]
+struct StringItem {
+    val: String,
+}
+
+#[derive(Deserialize)]
+struct BoolItem {
+    val: bool,
 }
 
 fn get_device_id(mv_device_name: String, mv_api_token: RspotifyToken) -> Option<String> {
@@ -280,18 +343,46 @@ async fn create_rest_server(
             routing::post({
                 let mv_device_name = device_name.clone();
                 let mv_api_token = api_token.clone();
+                let device_id = get_device_id(mv_device_name.clone(), api_token.clone());
                 move |Json(payload): Json<SeekItem>| {
                     let sp = create_spotify_api(&mv_api_token);
                     info!("pos: {}", payload.pos);
                     if let Ok(Some(playing)) = sp.current_user_playing_track() {
                         info!("current pos: {}", playing.progress_ms.unwrap_or(0));
-                        let res = sp.seek_track(
-                            playing.progress_ms.unwrap_or(0) + payload.pos,
-                            Some(mv_device_name),
-                        );
+                        let res = sp.seek_track(payload.pos, device_id);
                         info!("{res:?}");
                     }
                     shutdown()
+                }
+            }),
+        )
+        .route(
+            "/get_category_playlist",
+            routing::post({
+                let mv_device_name = device_name.clone();
+                let mv_api_token = api_token.clone();
+                move |Json(payload): Json<StringItem>| {
+                    get_category_playlist(payload.val, mv_device_name, mv_api_token)
+                }
+            }),
+        )
+        .route(
+            "/repeat",
+            routing::post({
+                let mv_device_name = device_name.clone();
+                let mv_api_token = api_token.clone();
+                move |Json(payload): Json<StringItem>| {
+                    repeat(payload.val, mv_device_name, mv_api_token)
+                }
+            }),
+        )
+        .route(
+            "/shuffle",
+            routing::post({
+                let mv_device_name = device_name.clone();
+                let mv_api_token = api_token.clone();
+                move |Json(payload): Json<BoolItem>| {
+                    shuffle(payload.val, mv_device_name, mv_api_token)
                 }
             }),
         )
@@ -306,7 +397,7 @@ async fn create_rest_server(
             "/player_status",
             routing::get({
                 let mv_api_token = api_token.clone();
-                move || return_playback(mv_api_token)
+                move || playback(mv_api_token)
             }),
         )
         .route(
