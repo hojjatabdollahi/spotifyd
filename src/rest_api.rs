@@ -149,6 +149,11 @@ struct SearchItem {
     keyword: String,
 }
 
+#[derive(Deserialize)]
+struct VolumeItem {
+    vol: u8,
+}
+
 async fn create_rest_server(
     api_token: RspotifyToken,
     spirc: Arc<Spirc>,
@@ -186,6 +191,65 @@ async fn create_rest_server(
                 let mv_api_token = api_token.clone();
                 move |Json(payload): Json<SearchItem>| {
                     search(payload.keyword, mv_device_name, mv_api_token)
+                }
+            }),
+        )
+        .route(
+            "/transfer_playback",
+            routing::get({
+                let mv_device_name = device_name.clone();
+                let mv_api_token = api_token.clone();
+                move || {
+                    let device_name =
+                        utf8_percent_encode(&mv_device_name, NON_ALPHANUMERIC).to_string();
+                    let sp = create_spotify_api(&mv_api_token);
+                    let device_id = match sp.device() {
+                        Ok(device_payload) => {
+                            match device_payload
+                                .devices
+                                .into_iter()
+                                .find(|d| d.name == device_name)
+                            {
+                                Some(device) => Some(device.id),
+                                None => None,
+                            }
+                        }
+                        Err(_) => None,
+                    };
+
+                    let _ = sp.transfer_playback(&device_id.unwrap(), false);
+
+                    shutdown()
+                }
+            }),
+        )
+        .route(
+            "/volume",
+            routing::post({
+                let local_spirc = Arc::clone(&spirc);
+                let mv_device_name = device_name.clone();
+                let mv_api_token = api_token.clone();
+                move |Json(payload): Json<VolumeItem>| {
+                    let device_name =
+                        utf8_percent_encode(&mv_device_name, NON_ALPHANUMERIC).to_string();
+                    let sp = create_spotify_api(&mv_api_token);
+                    let device_id = match sp.device() {
+                        Ok(device_payload) => {
+                            match device_payload
+                                .devices
+                                .into_iter()
+                                .find(|d| d.name == device_name)
+                            {
+                                Some(device) => Some(device.id),
+                                None => None,
+                            }
+                        }
+                        Err(_) => None,
+                    };
+
+                    sp.volume(payload.vol, device_id).unwrap();
+
+                    shutdown()
                 }
             }),
         )

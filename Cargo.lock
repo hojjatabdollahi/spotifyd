@@ -2853,8 +2853,6 @@ dependencies = [
 [[package]]
 name = "rspotify"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a924a166cfb1315c8d9c89148e438a1337feb655ce052fc6dc952af8018bad93"
 dependencies = [
  "base64 0.10.1",
  "chrono",
