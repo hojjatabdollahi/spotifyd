@@ -1,3 +1,4 @@
+use axum::response::{IntoResponse, Response};
 use chrono::{format, prelude::*};
 use futures::task::{Context, Poll};
 use futures::{self, Future};
@@ -10,6 +11,7 @@ use librespot_core::{
 use librespot_playback::player::PlayerEvent;
 use log::info;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use reqwest::StatusCode;
 use rspotify::spotify::model::context::FullPlayingContext;
 use rspotify::spotify::{
     client::Spotify,
@@ -24,6 +26,7 @@ use serde_json::{json, Value};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::{collections::HashMap, env};
+use structopt::clap::App;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use axum::{self, routing, Json};
@@ -133,8 +136,53 @@ async fn shutdown() -> Json<Value> {
     Json(json!({"res": "done"}))
 }
 
-async fn return_playback(val: Option<FullPlayingContext>) -> Json<Value> {
-    Json(json!(val))
+#[derive(Debug)]
+enum SError {
+    #[allow(dead_code)]
+    NotFound,
+    #[allow(dead_code)]
+    StatusError,
+    #[allow(dead_code)]
+    InvalidUsername,
+}
+enum AppError {
+    Playback(SError),
+}
+
+impl From<SError> for AppError {
+    fn from(inner: SError) -> Self {
+        AppError::Playback(inner)
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, error_message) = match self {
+            AppError::Playback(SError::NotFound) => (StatusCode::NOT_FOUND, "User not found"),
+            AppError::Playback(SError::StatusError) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get the data")
+            }
+            AppError::Playback(SError::InvalidUsername) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "Invalid username")
+            }
+        };
+
+        let body = Json(json!({
+            "error": error_message,
+        }));
+
+        (status, body).into_response()
+    }
+}
+
+async fn return_playback(api_token: RspotifyToken) -> Result<Json<Value>, AppError> {
+    let mv_api_token = api_token.clone();
+    let sp = create_spotify_api(&mv_api_token);
+    let val = sp.current_playback(None).map_err(|_| SError::StatusError)?;
+    match val {
+        Some(val) => Ok(Json(json!(val))),
+        None => Err(AppError::Playback(SError::StatusError)),
+    }
 }
 
 async fn search(query: String, mv_api_token: RspotifyToken) -> Json<Value> {
@@ -264,8 +312,7 @@ async fn create_rest_server(
             "/player_status",
             routing::get({
                 let mv_api_token = api_token.clone();
-                let sp = create_spotify_api(&mv_api_token);
-                move || return_playback(sp.current_playback(None).unwrap())
+                move || return_playback(mv_api_token)
             }),
         )
         .route(
