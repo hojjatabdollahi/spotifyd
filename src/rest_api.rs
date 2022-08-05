@@ -132,11 +132,13 @@ async fn shutdown() -> Json<Value> {
     Json(json!({"res": "done"}))
 }
 
-async fn search(query: String, mv_device_name: String, mv_api_token: RspotifyToken) -> Json<Value> {
-    let device_name = utf8_percent_encode(&mv_device_name, NON_ALPHANUMERIC).to_string();
+async fn search(query: String, mv_api_token: RspotifyToken) -> Json<Value> {
     let sp = create_spotify_api(&mv_api_token);
-    let res = sp.search_track(&query, 50, 0, None).unwrap();
-    Json(json!({ "res": format!("{:?}", res) }))
+    let res = sp.search_track(&query, 6, 0, None).unwrap();
+    let res2 = sp.search_album(&query, 5, 0, None).unwrap();
+    let res3 = sp.search_artist(&query, 5, 0, None).unwrap();
+    let res4 = sp.search_playlist(&query, 5, 0, None).unwrap();
+    Json(json!([res, res2, res3, res4]))
 }
 
 #[derive(Deserialize)]
@@ -152,6 +154,29 @@ struct SearchItem {
 #[derive(Deserialize)]
 struct VolumeItem {
     vol: u8,
+}
+
+#[derive(Deserialize)]
+struct SeekItem {
+    pos: u32,
+}
+
+fn get_device_id(mv_device_name: String, mv_api_token: RspotifyToken) -> Option<String> {
+    let device_name = utf8_percent_encode(&mv_device_name, NON_ALPHANUMERIC).to_string();
+    let sp = create_spotify_api(&mv_api_token);
+    match sp.device() {
+        Ok(device_payload) => {
+            match device_payload
+                .devices
+                .into_iter()
+                .find(|d| d.name == device_name)
+            {
+                Some(device) => Some(device.id),
+                None => None,
+            }
+        }
+        Err(_) => None,
+    }
 }
 
 async fn create_rest_server(
@@ -184,14 +209,50 @@ async fn create_rest_server(
             }),
         )
         .route(
-            "/search",
-            routing::post({
+            "/next",
+            routing::get({
                 let local_spirc = Arc::clone(&spirc);
+                move || {
+                    local_spirc.next();
+                    shutdown()
+                }
+            }),
+        )
+        .route(
+            "/previous",
+            routing::get({
+                let local_spirc = Arc::clone(&spirc);
+                move || {
+                    local_spirc.prev();
+                    shutdown()
+                }
+            }),
+        )
+        .route(
+            "/seek",
+            routing::post({
                 let mv_device_name = device_name.clone();
                 let mv_api_token = api_token.clone();
-                move |Json(payload): Json<SearchItem>| {
-                    search(payload.keyword, mv_device_name, mv_api_token)
+                move |Json(payload): Json<SeekItem>| {
+                    let sp = create_spotify_api(&mv_api_token);
+                    info!("pos: {}", payload.pos);
+                    if let Ok(Some(playing)) = sp.current_user_playing_track() {
+                        info!("current pos: {}", playing.progress_ms.unwrap_or(0));
+                        let res = sp.seek_track(
+                            playing.progress_ms.unwrap_or(0) + payload.pos,
+                            Some(mv_device_name),
+                        );
+                        info!("{res:?}");
+                    }
+                    shutdown()
                 }
+            }),
+        )
+        .route(
+            "/search",
+            routing::post({
+                let mv_api_token = api_token.clone();
+                move |Json(payload): Json<SearchItem>| search(payload.keyword, mv_api_token)
             }),
         )
         .route(
@@ -200,23 +261,8 @@ async fn create_rest_server(
                 let mv_device_name = device_name.clone();
                 let mv_api_token = api_token.clone();
                 move || {
-                    let device_name =
-                        utf8_percent_encode(&mv_device_name, NON_ALPHANUMERIC).to_string();
                     let sp = create_spotify_api(&mv_api_token);
-                    let device_id = match sp.device() {
-                        Ok(device_payload) => {
-                            match device_payload
-                                .devices
-                                .into_iter()
-                                .find(|d| d.name == device_name)
-                            {
-                                Some(device) => Some(device.id),
-                                None => None,
-                            }
-                        }
-                        Err(_) => None,
-                    };
-
+                    let device_id = get_device_id(mv_device_name, mv_api_token);
                     let _ = sp.transfer_playback(&device_id.unwrap(), false);
 
                     shutdown()
@@ -226,29 +272,12 @@ async fn create_rest_server(
         .route(
             "/volume",
             routing::post({
-                let local_spirc = Arc::clone(&spirc);
                 let mv_device_name = device_name.clone();
                 let mv_api_token = api_token.clone();
                 move |Json(payload): Json<VolumeItem>| {
-                    let device_name =
-                        utf8_percent_encode(&mv_device_name, NON_ALPHANUMERIC).to_string();
                     let sp = create_spotify_api(&mv_api_token);
-                    let device_id = match sp.device() {
-                        Ok(device_payload) => {
-                            match device_payload
-                                .devices
-                                .into_iter()
-                                .find(|d| d.name == device_name)
-                            {
-                                Some(device) => Some(device.id),
-                                None => None,
-                            }
-                        }
-                        Err(_) => None,
-                    };
-
+                    let device_id = get_device_id(mv_device_name, mv_api_token);
                     sp.volume(payload.vol, device_id).unwrap();
-
                     shutdown()
                 }
             }),
@@ -256,27 +285,11 @@ async fn create_rest_server(
         .route(
             "/OpenUri",
             routing::post({
-                let local_spirc = Arc::clone(&spirc);
                 let mv_device_name = device_name.clone();
                 let mv_api_token = api_token.clone();
                 move |Json(payload): Json<UriItem>| {
-                    let device_name =
-                        utf8_percent_encode(&mv_device_name, NON_ALPHANUMERIC).to_string();
                     let sp = create_spotify_api(&mv_api_token);
-                    let device_id = match sp.device() {
-                        Ok(device_payload) => {
-                            match device_payload
-                                .devices
-                                .into_iter()
-                                .find(|d| d.is_active && d.name == device_name)
-                            {
-                                Some(device) => Some(device.id),
-                                None => None,
-                            }
-                        }
-                        Err(_) => None,
-                    };
-
+                    let device_id = get_device_id(mv_device_name, mv_api_token);
                     if payload.uri.contains("spotify:track") {
                         let _ = sp.start_playback(
                             device_id,
