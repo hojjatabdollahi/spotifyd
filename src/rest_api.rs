@@ -1,5 +1,5 @@
 use axum::response::{IntoResponse, Response};
-use chrono::{format, prelude::*};
+use chrono::prelude::*;
 use futures::task::{Context, Poll};
 use futures::{self, Future};
 use librespot_connect::spirc::Spirc;
@@ -12,21 +12,15 @@ use librespot_playback::player::PlayerEvent;
 use log::info;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::StatusCode;
-use rspotify::spotify::model::context::FullPlayingContext;
 use rspotify::spotify::{
-    client::Spotify,
-    model::search::SearchTracks,
-    model::{offset::for_position, track::FullTrack},
-    oauth2::TokenInfo as RspotifyToken,
-    senum::*,
+    client::Spotify, model::offset::for_position, oauth2::TokenInfo as RspotifyToken,
     util::datetime_to_timestamp,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::env;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::{collections::HashMap, env};
-use structopt::clap::App;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use axum::{self, routing, Json};
@@ -375,7 +369,7 @@ async fn create_rest_server(
     tokio::spawn(async move { w.await });
 
     loop {
-        let event = event_rx
+        let _ = event_rx
             .recv()
             .await
             .expect("Changed track channel was unexpectedly closed");
@@ -384,11 +378,4 @@ async fn create_rest_server(
 
 fn create_spotify_api(token: &RspotifyToken) -> Spotify {
     Spotify::default().access_token(&token.access_token).build()
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PlaybackStatus {
-    Playing,
-    Paused,
-    Stopped,
 }
