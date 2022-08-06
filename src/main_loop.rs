@@ -4,14 +4,16 @@ use crate::process::{spawn_program_on_event, Child};
 #[cfg(feature = "rest_api")]
 use crate::rest_api::RestServer;
 use futures::{self, Future, Stream, StreamExt};
-use librespot_connect::{discovery::DiscoveryStream, spirc::Spirc};
+use librespot_connect::spirc::Spirc;
 use librespot_core::session::SessionError;
 use librespot_core::{
     cache::Cache,
-    config::{ConnectConfig, DeviceType, SessionConfig, VolumeCtrl},
+    config::{ConnectConfig, DeviceType, SessionConfig},
     session::Session,
 };
-use librespot_playback::config::AudioFormat;
+use librespot_discovery::Credentials;
+use librespot_discovery::Discovery;
+use librespot_playback::config::{AudioFormat, VolumeCtrl};
 use librespot_playback::{
     audio_backend::Sink,
     config::PlayerConfig,
@@ -28,16 +30,16 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 pub struct LibreSpotConnection {
-    connection: Pin<Box<dyn Future<Output = Result<Session, SessionError>>>>,
+    connection: Pin<Box<dyn Future<Output = Result<(Session, Credentials), SessionError>>>>,
     spirc_task: Option<Pin<Box<dyn Future<Output = ()>>>>,
     spirc: Option<Arc<Spirc>>,
-    discovery_stream: DiscoveryStream,
+    discovery_stream: Discovery,
 }
 
 impl LibreSpotConnection {
     pub fn new(
-        connection: Pin<Box<dyn Future<Output = Result<Session, SessionError>>>>,
-        discovery_stream: DiscoveryStream,
+        connection: Pin<Box<dyn Future<Output = Result<(Session, Credentials), SessionError>>>>,
+        discovery_stream: Discovery,
     ) -> LibreSpotConnection {
         LibreSpotConnection {
             connection,
@@ -139,7 +141,7 @@ impl Future for MainLoopState {
                 let cache = self.spotifyd_state.cache.clone();
                 // TODO: a bunch of this init logic can probably be unrolled using async / await
                 self.librespot_connection.connection =
-                    Box::pin(Session::connect(session_config, creds, cache));
+                    Box::pin(Session::connect(session_config, creds, cache, false));
             }
 
             if let Some(mut child) = self.running_event_program.take() {
@@ -185,13 +187,13 @@ impl Future for MainLoopState {
             if let Poll::Ready(Ok(session)) = self.librespot_connection.connection.as_mut().poll(cx)
             {
                 let mixer = (self.audio_setup.mixer)();
-                let audio_filter = mixer.get_audio_filter();
+                let audio_filter = mixer.get_soft_volume();
                 self.librespot_connection.connection = Box::pin(futures::future::pending());
                 let backend = self.audio_setup.backend;
                 let audio_device = self.audio_setup.audio_device.clone();
                 let (player, event_channel) = Player::new(
                     self.player_config.clone(),
-                    session.clone(),
+                    session.0.clone(),
                     audio_filter,
                     // TODO: dunno how to work with AudioFormat yet, maybe dig further if this
                     // doesn't work for all configurations
@@ -206,10 +208,10 @@ impl Future for MainLoopState {
                         autoplay: self.autoplay,
                         name: self.spotifyd_state.device_name.clone(),
                         device_type: self.device_type,
-                        volume: self.initial_volume.unwrap_or_else(|| mixer.volume()),
-                        volume_ctrl: self.volume_ctrl.clone(),
+                        initial_volume: self.initial_volume,
+                        has_volume_ctrl: true,
                     },
-                    session.clone(),
+                    session.0.clone(),
                     player,
                     mixer,
                 );
@@ -234,7 +236,7 @@ impl Future for MainLoopState {
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                     self.rest_event_tx = Some(tx);
                     self.spotifyd_state.rest_server = new_rest_server(
-                        session.clone(),
+                        session.0.clone(),
                         shared_spirc.clone(),
                         self.spotifyd_state.device_name.clone(),
                         rx,

@@ -3,18 +3,15 @@ use crate::alsa_mixer;
 use crate::{config, main_loop};
 #[cfg(feature = "dbus_keyring")]
 use keyring::Keyring;
-use librespot_connect::discovery::discovery;
 use librespot_core::{
-    authentication::Credentials,
-    cache::Cache,
-    config::{ConnectConfig, DeviceType, VolumeCtrl},
-    session::Session,
+    authentication::Credentials, cache::Cache, config::DeviceType, session::Session,
     session::SessionError,
 };
+use librespot_discovery::Discovery;
 use librespot_playback::{
     audio_backend::{Sink, BACKENDS},
-    config::AudioFormat,
-    mixer::{self, Mixer},
+    config::{AudioFormat, VolumeCtrl},
+    mixer::{self, Mixer, MixerConfig},
 };
 use log::info;
 use std::pin::Pin;
@@ -56,8 +53,9 @@ pub(crate) fn initial_state(config: config::SpotifydConfig) -> main_loop::MainLo
     #[cfg(not(feature = "alsa_backend"))]
     let mut mixer = {
         info!("Using software volume controller.");
-        Box::new(|| Box::new(mixer::softmixer::SoftMixer::open(None)) as Box<dyn Mixer>)
-            as Box<dyn FnMut() -> Box<dyn Mixer>>
+        Box::new(|| {
+            Box::new(mixer::softmixer::SoftMixer::open(MixerConfig::default())) as Box<dyn Mixer>
+        }) as Box<dyn FnMut() -> Box<dyn Mixer>>
     };
 
     let cache = config.cache;
@@ -85,18 +83,12 @@ pub(crate) fn initial_state(config: config::SpotifydConfig) -> main_loop::MainLo
     let device_type: DeviceType = DeviceType::from_str(&config.device_type).unwrap_or_default();
 
     #[allow(clippy::or_fun_call)]
-    let discovery_stream = discovery(
-        ConnectConfig {
-            autoplay,
-            name: config.device_name.clone(),
-            device_type,
-            volume: mixer().volume(),
-            volume_ctrl: volume_ctrl.clone(),
-        },
-        device_id,
-        zeroconf_port,
-    )
-    .unwrap();
+    let discovery_stream = Discovery::builder(device_id)
+        .device_type(device_type)
+        .name(config.device_name.clone())
+        .port(zeroconf_port)
+        .launch()
+        .unwrap();
 
     let username = config.username;
     #[allow(unused_mut)] // mut is needed behind the dbus_keyring flag.
@@ -114,9 +106,14 @@ pub(crate) fn initial_state(config: config::SpotifydConfig) -> main_loop::MainLo
     }
 
     let connection = if let Some(credentials) = get_credentials(&cache, &username, &password) {
-        let sess: Pin<Box<dyn futures::Future<Output = Result<Session, SessionError>>>> = Box::pin(
-            Session::connect(session_config.clone(), credentials, cache.clone()),
-        );
+        let sess: Pin<
+            Box<dyn futures::Future<Output = Result<(Session, Credentials), SessionError>>>,
+        > = Box::pin(Session::connect(
+            session_config.clone(),
+            credentials,
+            cache.clone(),
+            false,
+        ));
         sess
     } else {
         Box::pin(futures::future::pending())

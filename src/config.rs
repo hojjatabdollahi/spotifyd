@@ -607,7 +607,12 @@ pub(crate) fn get_internal_config(config: CliConfig) -> SpotifydConfig {
         .and_then(|path| {
             Cache::new(
                 Some(path.clone()),
-                if audio_cache { Some(path) } else { None },
+                if audio_cache {
+                    Some(path.clone())
+                } else {
+                    None
+                },
+                Some(path.clone()),
                 size_limit,
             )
             .ok()
@@ -717,10 +722,8 @@ pub(crate) fn get_internal_config(config: CliConfig) -> SpotifydConfig {
     let pc = PlayerConfig {
         bitrate,
         normalisation: config.shared_config.volume_normalisation,
-        normalisation_pregain,
         // Sensible default; the "default" supplied by PlayerConfig::default() sets this to -1.0,
         // which turns the output to garbage.
-        normalisation_threshold: 1.0,
         gapless: true,
         ..Default::default()
     };

@@ -1,6 +1,6 @@
 [package]
 authors = ["Simon Persson <simon@flaskpost.org>", "Sven Lechner <sven.lechner@rwth-aachen.de>"]
-edition = "2018"
+edition = "2021"
 name = "spotifyd"
 description = "A Spotify daemon"
 repository = "https://github.com/Spotifyd/spotifyd"
@@ -34,10 +34,15 @@ tokio-compat-02 = "0.2.0"
 tokio-stream = "0.1.7"
 url = "1.7"
 xdg = "2.2"
-librespot-audio = { version = "0.2.0", default-features=false, features = ["with-tremor"] }
-librespot-playback = { version = "0.2.0", default-features=false }
-librespot-core = { version = "0.2.0"}
-librespot-connect = { version = "0.2.0"}
+
+librespot-audio = { version = "0.4.2", default-features=false }
+librespot-connect = { version = "0.4.2"}
+librespot-core = { version = "0.4.2"}
+librespot-discovery = { version = "0.4.2"}
+librespot-metadata = { version = "0.4.2"}
+librespot-playback = { version = "0.4.2" }
+librespot-protocol = { version = "0.4.2" }
+
 toml = "0.5.8"
 color-eyre = "0.5"
 
