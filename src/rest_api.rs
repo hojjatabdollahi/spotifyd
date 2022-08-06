@@ -1,5 +1,5 @@
 use axum::response::{IntoResponse, Response};
-use chrono::prelude::*;
+use chrono::{prelude::*, Duration};
 use futures::task::{Context, Poll};
 use futures::{self, Future};
 use librespot_connect::spirc::Spirc;
@@ -9,19 +9,21 @@ use librespot_core::{
     session::Session,
 };
 use librespot_playback::player::PlayerEvent;
-use log::info;
+use log::{error, info};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::StatusCode;
-use rspotify::spotify::senum::RepeatState;
-use rspotify::spotify::{
-    client::Spotify, model::offset::for_position, oauth2::TokenInfo as RspotifyToken,
-    util::datetime_to_timestamp,
+use rspotify::{
+    model::{
+        offset::Offset, AlbumId, ArtistId, EpisodeId, IdError, PlayableItem, PlaylistId,
+        RepeatState, SearchType, ShowId, TrackId, Type,
+    },
+    prelude::*,
+    AuthCodeSpotify, Token as RspotifyToken,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::env;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::net::Shutdown;
+use std::{collections::HashMap, env, pin::Pin, sync::Arc};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use axum::{self, routing, Json};
@@ -29,7 +31,8 @@ use axum::{self, routing, Json};
 pub struct RestServer {
     session: Session,
     spirc: Arc<Spirc>,
-    api_token: RspotifyToken,
+    // api_token: RspotifyToken,
+    spotify_client: Arc<AuthCodeSpotify>,
     #[allow(clippy::type_complexity)]
     token_request: Option<Pin<Box<dyn Future<Output = Result<LibrespotToken, MercuryError>>>>>,
     rest_future: Option<Pin<Box<dyn Future<Output = ()>>>>,
@@ -56,7 +59,8 @@ impl RestServer {
         RestServer {
             session,
             spirc,
-            api_token: RspotifyToken::default(),
+            // api_token: RspotifyToken::default(),
+            spotify_client: Default::default(),
             token_request: None,
             rest_future: None,
             device_name,
@@ -65,13 +69,13 @@ impl RestServer {
         }
     }
 
-    fn is_token_expired(&self) -> bool {
-        let now: DateTime<Utc> = Utc::now();
-        match self.api_token.expires_at {
-            Some(expires_at) => now.timestamp() > expires_at - 100,
-            None => true,
-        }
-    }
+    // fn is_token_expired(&self) -> bool {
+    //     let now: DateTime<Utc> = Utc::now();
+    //     match self.api_token.expires_at {
+    //         Some(expires_at) => now.timestamp() > expires_at - 100,
+    //         None => true,
+    //     }
+    // }
 }
 
 impl Future for RestServer {
@@ -83,28 +87,47 @@ impl Future for RestServer {
                 self.event_tx.as_ref().unwrap().send(msg).unwrap();
             }
         }
-        let mut got_new_token = false;
-        if self.is_token_expired() {
-            if let Some(ref mut fut) = self.token_request {
-                if let Poll::Ready(Ok(token)) = fut.as_mut().poll(cx) {
-                    self.api_token = RspotifyToken::default()
-                        .access_token(&token.access_token)
-                        .expires_in(token.expires_in)
-                        .expires_at(datetime_to_timestamp(token.expires_in));
-                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                    self.event_tx = Some(tx);
-                    self.rest_future = Some(Box::pin(create_rest_server(
-                        self.api_token.clone(),
-                        self.spirc.clone(),
-                        self.device_name.clone(),
-                        rx,
-                    )));
-                    // TODO: for reasons I don't _entirely_ understand, the token request completing
-                    // convinces callers that they don't need to re-check the status of this future
-                    // until we start playing. This causes DBUS to not respond until that point in
-                    // time. So, fire a "wake" here, which tells callers to keep checking.
-                    cx.waker().clone().wake();
-                    got_new_token = true;
+        let needs_token = match *self.spotify_client.get_token().lock().unwrap() {
+            Some(ref token) => token.is_expired(),
+            None => true,
+        };
+
+        if needs_token {
+            if let Some(mut fut) = self.token_request.take() {
+                if let Poll::Ready(token) = fut.as_mut().poll(cx) {
+                    let token = match token {
+                        Ok(token) => token,
+                        Err(_) => {
+                            error!("failed to request a token for the web API");
+                            // shutdown DBus-Server
+                            return Poll::Ready(());
+                        }
+                    };
+
+                    let expires_in = Duration::seconds(token.expires_in as i64);
+                    let api_token = RspotifyToken {
+                        access_token: token.access_token,
+                        expires_in,
+                        expires_at: Some(Utc::now() + expires_in),
+                        ..RspotifyToken::default()
+                    };
+
+                    if self.rest_future.is_none() {
+                        self.spotify_client = Arc::new(AuthCodeSpotify::from_token(api_token));
+
+                        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                        self.event_tx = Some(tx);
+                        self.rest_future = Some(Box::pin(create_rest_server(
+                            Arc::clone(&self.spotify_client),
+                            self.spirc.clone(),
+                            self.device_name.clone(),
+                            rx,
+                        )));
+                    } else {
+                        *self.spotify_client.get_token().lock().unwrap() = Some(api_token);
+                    }
+                } else {
+                    self.token_request = Some(fut);
                 }
             } else {
                 self.token_request = Some(Box::pin({
@@ -115,12 +138,15 @@ impl Future for RestServer {
                     async move { get_token(&sess, &client_id, SCOPE).await }
                 }));
             }
-        } else if let Some(ref mut fut) = self.rest_future {
-            return fut.as_mut().poll(cx);
         }
 
-        if got_new_token {
-            self.token_request = None;
+        // Not polling the future here in some cases is fine, since we will poll it
+        // immediately after the token request has completed.
+        // If we would poll the future in any case, we would risk using invalid tokens for API requests.
+        if self.token_request.is_none() {
+            if let Some(ref mut fut) = self.rest_future {
+                return fut.as_mut().poll(cx);
+            }
         }
 
         Poll::Pending
@@ -170,10 +196,10 @@ impl IntoResponse for AppError {
     }
 }
 
-async fn playback(api_token: RspotifyToken) -> Result<Json<Value>, AppError> {
-    let mv_api_token = api_token.clone();
-    let sp = create_spotify_api(&mv_api_token);
-    let val = sp.current_playback(None).map_err(|_| SError::StatusError)?;
+async fn playback(sp_client: Arc<AuthCodeSpotify>) -> Result<Json<Value>, AppError> {
+    let val = sp_client
+        .current_playback(None, None::<Vec<_>>)
+        .map_err(|_| SError::StatusError)?;
     match val {
         Some(val) => Ok(Json(json!(val))),
         None => Err(AppError::Playback(SError::StatusError)),
@@ -183,64 +209,159 @@ async fn playback(api_token: RspotifyToken) -> Result<Json<Value>, AppError> {
 async fn shuffle(
     state: bool,
     device_name: String,
-    api_token: RspotifyToken,
+    sp_client: Arc<AuthCodeSpotify>,
 ) -> Result<Json<Value>, AppError> {
-    let mv_api_token = api_token.clone();
-    let sp = create_spotify_api(&mv_api_token);
-    let device_id = get_device_id(device_name.clone(), api_token.clone());
+    let device_id = get_device_id(device_name.clone(), sp_client.clone());
     info!("{device_id:?}");
-    sp.shuffle(state, device_id)
+    sp_client
+        .shuffle(state, device_id.as_deref())
         .map_err(|_| SError::StatusError)?;
     Ok(Json(json!({"res": "done"})))
 }
 
 async fn get_category_playlist(
     category_id: String,
-    device_name: String,
-    api_token: RspotifyToken,
+    sp_client: Arc<AuthCodeSpotify>,
 ) -> Result<Json<Value>, AppError> {
-    let mv_api_token = api_token.clone();
-    let sp = create_spotify_api(&mv_api_token);
-    let device_id = get_device_id(device_name.clone(), api_token.clone());
-    info!("{device_id:?}");
-
-    let res = sp
-        .get_category_playlist(category_id, None, Some(30), Some(0))
+    let res = sp_client
+        .category_playlists_manual(&category_id, None, Some(30), None)
         .map_err(|e| {
             info!("{e:?}");
             SError::StatusError
         })?;
     Ok(Json(json!(res)))
 }
+
 async fn repeat(
     payload_state: String,
     device_name: String,
-    api_token: RspotifyToken,
+    sp_client: Arc<AuthCodeSpotify>,
 ) -> Result<Json<Value>, AppError> {
-    let mv_api_token = api_token.clone();
-    let sp = create_spotify_api(&mv_api_token);
-    let device_id = get_device_id(device_name.clone(), api_token.clone());
-    info!("{device_id:?}");
     let state = match payload_state.as_str() {
         "track" => RepeatState::Track,
         "context" => RepeatState::Context,
         "off" => RepeatState::Off,
         _ => RepeatState::Off,
     };
-    sp.repeat(state, device_id)
+    let device_id = get_device_id(device_name, sp_client.clone());
+    sp_client
+        .repeat(&state, device_id.as_deref())
         .map_err(|_| SError::StatusError)?;
     Ok(Json(json!({"res": "done"})))
 }
 
-async fn search(query: String, mv_api_token: RspotifyToken) -> Json<Value> {
-    let sp = create_spotify_api(&mv_api_token);
-    let res = sp.search_track(&query, 6, 0, None).unwrap();
-    let res2 = sp.search_album(&query, 5, 0, None).unwrap();
-    let res3 = sp.search_artist(&query, 5, 0, None).unwrap();
-    let res4 = sp.search_playlist(&query, 5, 0, None).unwrap();
+async fn search(query: String, sp_client: Arc<AuthCodeSpotify>) -> Json<Value> {
+    let res = sp_client
+        .search(&query, &SearchType::Track, None, None, Some(6), None)
+        .unwrap();
+    let res2 = sp_client
+        .search(&query, &SearchType::Album, None, None, Some(6), None)
+        .unwrap();
+    let res3 = sp_client
+        .search(&query, &SearchType::Artist, None, None, Some(6), None)
+        .unwrap();
+    let res4 = sp_client
+        .search(&query, &SearchType::Playlist, None, None, Some(6), None)
+        .unwrap();
     Json(json!([res, res2, res3, res4]))
 }
 
+async fn open_ur(
+    sp_client: Arc<AuthCodeSpotify>,
+    uri: String,
+    device_name: String,
+) -> Result<Json<Value>, AppError> {
+    struct AnyContextId(Box<dyn PlayContextId>);
+
+    impl Id for AnyContextId {
+        fn id(&self) -> &str {
+            self.0.id()
+        }
+
+        fn _type(&self) -> Type {
+            self.0._type()
+        }
+
+        fn _type_static() -> Type
+        where
+            Self: Sized,
+        {
+            unreachable!("never called");
+        }
+
+        unsafe fn from_id_unchecked(_id: &str) -> Self
+        where
+            Self: Sized,
+        {
+            unreachable!("never called");
+        }
+    }
+    impl PlayContextId for AnyContextId {}
+
+    enum Uri {
+        Playable(Box<dyn PlayableId>),
+        Context(AnyContextId),
+    }
+
+    impl Uri {
+        fn from_id(id_type: Type, id: &str) -> Result<Uri, IdError> {
+            use Uri::*;
+            let uri = match id_type {
+                Type::Track => Playable(Box::new(TrackId::from_id(id)?)),
+                Type::Episode => Playable(Box::new(EpisodeId::from_id(id)?)),
+                Type::Artist => Context(AnyContextId(Box::new(ArtistId::from_id(id)?))),
+                Type::Album => Context(AnyContextId(Box::new(AlbumId::from_id(id)?))),
+                Type::Playlist => Context(AnyContextId(Box::new(PlaylistId::from_id(id)?))),
+                Type::Show => Context(AnyContextId(Box::new(ShowId::from_id(id)?))),
+                Type::User | Type::Collection => return Err(IdError::InvalidType),
+            };
+            Ok(uri)
+        }
+    }
+
+    let mut chars = uri
+        .strip_prefix("spotify")
+        // .ok_or_else(|| MethodErr::invalid_arg(&uri))?
+        .ok_or_else(|| AppError::Playback(SError::NotFound))?
+        .chars();
+
+    let sep = match chars.next() {
+        Some(ch) if ch == '/' || ch == ':' => ch,
+        // _ => return Err(MethodErr::invalid_arg(&uri)),
+        _ => return Err(AppError::Playback(SError::NotFound)),
+    };
+    let rest = chars.as_str();
+
+    let (id_type, id) = rest
+        .rsplit_once(sep)
+        .and_then(|(id_type, id)| Some((id_type.parse::<Type>().ok()?, id)))
+        // .ok_or_else(|| MethodErr::invalid_arg(&uri))?;
+        .ok_or_else(|| AppError::Playback(SError::NotFound))?;
+
+    // let uri = Uri::from_id(id_type, id).map_err(|_| MethodErr::invalid_arg(&uri))?;
+    let uri = Uri::from_id(id_type, id).map_err(|_| AppError::Playback(SError::NotFound))?;
+
+    let device_id = get_device_id(device_name, sp_client.clone());
+    match uri {
+        Uri::Playable(id) => {
+            let _ = sp_client.start_uris_playback(
+                Some(id.as_ref()),
+                device_id.as_deref(),
+                Some(Offset::for_position(0)),
+                None,
+            );
+        }
+        Uri::Context(id) => {
+            let _ = sp_client.start_context_playback(
+                &id,
+                device_id.as_deref(),
+                Some(Offset::for_position(0)),
+                None,
+            );
+        }
+    }
+    Ok(Json(json!({"res": "done"})))
+}
 #[derive(Deserialize)]
 struct UriItem {
     uri: String,
@@ -271,26 +392,17 @@ struct BoolItem {
     val: bool,
 }
 
-fn get_device_id(mv_device_name: String, mv_api_token: RspotifyToken) -> Option<String> {
-    let device_name = utf8_percent_encode(&mv_device_name, NON_ALPHANUMERIC).to_string();
-    let sp = create_spotify_api(&mv_api_token);
-    match sp.device() {
-        Ok(device_payload) => {
-            match device_payload
-                .devices
-                .into_iter()
-                .find(|d| d.name == device_name)
-            {
-                Some(device) => Some(device.id),
-                None => None,
-            }
-        }
-        Err(_) => None,
-    }
+fn get_device_id(mv_device_name: String, sp_client: Arc<AuthCodeSpotify>) -> Option<String> {
+    sp_client.device().ok().and_then(|devices| {
+        devices
+            .into_iter()
+            .find_map(|d| if d.name == mv_device_name { d.id } else { None })
+    })
 }
 
 async fn create_rest_server(
-    api_token: RspotifyToken,
+    // api_token: RspotifyToken,
+    spotify_api_client: Arc<AuthCodeSpotify>,
     spirc: Arc<Spirc>,
     device_name: String,
     mut event_rx: UnboundedReceiver<PlayerEvent>,
@@ -342,14 +454,14 @@ async fn create_rest_server(
             "/seek",
             routing::post({
                 let mv_device_name = device_name.clone();
-                let mv_api_token = api_token.clone();
-                let device_id = get_device_id(mv_device_name.clone(), api_token.clone());
+                // let mv_api_token = api_token.clone();
+                let sp_client = Arc::clone(&spotify_api_client);
                 move |Json(payload): Json<SeekItem>| {
-                    let sp = create_spotify_api(&mv_api_token);
+                    // let sp = create_spotify_api(&mv_api_token);
                     info!("pos: {}", payload.pos);
-                    if let Ok(Some(playing)) = sp.current_user_playing_track() {
-                        info!("current pos: {}", playing.progress_ms.unwrap_or(0));
-                        let res = sp.seek_track(payload.pos, device_id);
+                    if let Ok(Some(playing)) = sp_client.current_playback(None, None::<Vec<_>>) {
+                        info!("current pos: {:?}", playing.progress);
+                        let res = sp_client.seek_track(payload.pos, playing.device.id.as_deref());
                         info!("{res:?}");
                     }
                     shutdown()
@@ -360,19 +472,17 @@ async fn create_rest_server(
             "/get_category_playlist",
             routing::post({
                 let mv_device_name = device_name.clone();
-                let mv_api_token = api_token.clone();
-                move |Json(payload): Json<StringItem>| {
-                    get_category_playlist(payload.val, mv_device_name, mv_api_token)
-                }
+                let sp_client = Arc::clone(&spotify_api_client);
+                move |Json(payload): Json<StringItem>| get_category_playlist(payload.val, sp_client)
             }),
         )
         .route(
             "/repeat",
             routing::post({
+                let sp_client = Arc::clone(&spotify_api_client);
                 let mv_device_name = device_name.clone();
-                let mv_api_token = api_token.clone();
                 move |Json(payload): Json<StringItem>| {
-                    repeat(payload.val, mv_device_name, mv_api_token)
+                    repeat(payload.val, mv_device_name, sp_client)
                 }
             }),
         )
@@ -380,35 +490,32 @@ async fn create_rest_server(
             "/shuffle",
             routing::post({
                 let mv_device_name = device_name.clone();
-                let mv_api_token = api_token.clone();
-                move |Json(payload): Json<BoolItem>| {
-                    shuffle(payload.val, mv_device_name, mv_api_token)
-                }
+                let sp_client = Arc::clone(&spotify_api_client);
+                move |Json(payload): Json<BoolItem>| shuffle(payload.val, mv_device_name, sp_client)
             }),
         )
         .route(
             "/search",
             routing::post({
-                let mv_api_token = api_token.clone();
-                move |Json(payload): Json<SearchItem>| search(payload.keyword, mv_api_token)
+                let sp_client = Arc::clone(&spotify_api_client);
+                move |Json(payload): Json<SearchItem>| search(payload.keyword, sp_client)
             }),
         )
         .route(
             "/player_status",
             routing::get({
-                let mv_api_token = api_token.clone();
-                move || playback(mv_api_token)
+                let sp_client = Arc::clone(&spotify_api_client);
+                move || playback(sp_client)
             }),
         )
         .route(
             "/transfer_playback",
             routing::get({
                 let mv_device_name = device_name.clone();
-                let mv_api_token = api_token.clone();
+                let sp_client = Arc::clone(&spotify_api_client);
                 move || {
-                    let sp = create_spotify_api(&mv_api_token);
-                    let device_id = get_device_id(mv_device_name, mv_api_token);
-                    let _ = sp.transfer_playback(&device_id.unwrap(), false);
+                    let device_id = get_device_id(mv_device_name, sp_client.clone());
+                    let _ = sp_client.transfer_playback(&device_id.unwrap(), Some(false));
 
                     shutdown()
                 }
@@ -418,11 +525,10 @@ async fn create_rest_server(
             "/volume",
             routing::post({
                 let mv_device_name = device_name.clone();
-                let mv_api_token = api_token.clone();
+                let sp_client = Arc::clone(&spotify_api_client);
                 move |Json(payload): Json<VolumeItem>| {
-                    let sp = create_spotify_api(&mv_api_token);
-                    let device_id = get_device_id(mv_device_name, mv_api_token);
-                    sp.volume(payload.vol, device_id).unwrap();
+                    let device_id = get_device_id(mv_device_name, sp_client.clone());
+                    sp_client.volume(payload.vol, device_id.as_deref()).unwrap();
                     shutdown()
                 }
             }),
@@ -431,29 +537,8 @@ async fn create_rest_server(
             "/open_uri",
             routing::post({
                 let mv_device_name = device_name.clone();
-                let mv_api_token = api_token.clone();
-                move |Json(payload): Json<UriItem>| {
-                    let sp = create_spotify_api(&mv_api_token);
-                    let device_id = get_device_id(mv_device_name, mv_api_token);
-                    if payload.uri.contains("spotify:track") {
-                        let _ = sp.start_playback(
-                            device_id,
-                            None,
-                            Some(vec![payload.uri]),
-                            for_position(0),
-                            None,
-                        );
-                    } else {
-                        let _ = sp.start_playback(
-                            device_id,
-                            Some(payload.uri),
-                            None,
-                            for_position(0),
-                            None,
-                        );
-                    }
-                    shutdown()
-                }
+                let sp_client = Arc::clone(&spotify_api_client);
+                move |Json(payload): Json<UriItem>| open_ur(sp_client, payload.uri, mv_device_name)
             }),
         );
     let w = axum::Server::bind(&"0.0.0.0:3000".parse().unwrap()).serve(app.into_make_service());
@@ -465,8 +550,4 @@ async fn create_rest_server(
             .await
             .expect("Changed track channel was unexpectedly closed");
     }
-}
-
-fn create_spotify_api(token: &RspotifyToken) -> Spotify {
-    Spotify::default().access_token(&token.access_token).build()
 }
