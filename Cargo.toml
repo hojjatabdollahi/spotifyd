@@ -70,8 +70,7 @@ rodio_backend = ["librespot-playback/rodio-backend"]
 depends = "$auto, systemd, pulseaudio"
 features = [
     "pulseaudio_backend",
-    "dbus_keyring",
-    "dbus_mpris",
+    "rest_api"
 ]
 assets = [
     ["target/release/spotifyd", "usr/bin/", "755"],
