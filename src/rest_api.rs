@@ -151,8 +151,12 @@ impl Future for RestServer {
     }
 }
 
-async fn shutdown() -> Json<Value> {
-    Json(json!({"res": "done"}))
+async fn generate_response(error: bool) -> Result<Json<Value>, AppError> {
+    if error {
+        Err(AppError::Playback(SError::StatusError))
+    } else {
+        Ok(Json(json!({"res": "done"})))
+    }
 }
 
 #[derive(Debug)]
@@ -346,9 +350,10 @@ async fn open_ur(
     let uri = Uri::from_id(id_type, id).map_err(|_| AppError::Playback(SError::NotFound))?;
 
     let device_id = get_device_id(device_name, sp_client.clone());
+    let mut res;
     match uri {
         Uri::Playable(id) => {
-            let _ = sp_client.start_uris_playback(
+            res = sp_client.start_uris_playback(
                 Some(id.as_ref()),
                 device_id.as_deref(),
                 Some(Offset::for_position(0)),
@@ -356,7 +361,7 @@ async fn open_ur(
             );
         }
         Uri::Context(id) => {
-            let _ = sp_client.start_context_playback(
+            res = sp_client.start_context_playback(
                 &id,
                 device_id.as_deref(),
                 Some(Offset::for_position(0)),
@@ -364,7 +369,11 @@ async fn open_ur(
             );
         }
     }
-    Ok(Json(json!({"res": "done"})))
+    if res.is_err() {
+        generate_response(true).await
+    } else {
+        generate_response(false).await
+    }
 }
 #[derive(Deserialize)]
 struct UriItem {
@@ -413,14 +422,13 @@ async fn create_rest_server(
 ) {
     info!("Hello");
     let app = axum::Router::new()
-        .route("/", routing::get(shutdown))
         .route(
             "/shutdown",
             routing::get({
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.shutdown();
-                    shutdown()
+                    generate_response(false)
                 }
             }),
         )
@@ -430,7 +438,7 @@ async fn create_rest_server(
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.play_pause();
-                    shutdown()
+                    generate_response(false)
                 }
             }),
         )
@@ -440,7 +448,7 @@ async fn create_rest_server(
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.next();
-                    shutdown()
+                    generate_response(false)
                 }
             }),
         )
@@ -450,7 +458,7 @@ async fn create_rest_server(
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.prev();
-                    shutdown()
+                    generate_response(false)
                 }
             }),
         )
@@ -468,7 +476,7 @@ async fn create_rest_server(
                         let res = sp_client.seek_track(payload.pos, playing.device.id.as_deref());
                         info!("{res:?}");
                     }
-                    shutdown()
+                    generate_response(false)
                 }
             }),
         )
@@ -517,11 +525,12 @@ async fn create_rest_server(
             routing::get({
                 let mv_device_name = device_name.clone();
                 let sp_client = Arc::clone(&spotify_api_client);
-                move || {
-                    let device_id = get_device_id(mv_device_name, sp_client.clone());
-                    let _ = sp_client.transfer_playback(&device_id.unwrap(), Some(false));
-
-                    shutdown()
+                move || match get_device_id(mv_device_name, sp_client.clone()) {
+                    Some(device_id) => {
+                        let _ = sp_client.transfer_playback(&device_id, Some(false));
+                        generate_response(false)
+                    }
+                    None => generate_response(true),
                 }
             }),
         )
@@ -532,8 +541,10 @@ async fn create_rest_server(
                 let sp_client = Arc::clone(&spotify_api_client);
                 move |Json(payload): Json<VolumeItem>| {
                     let device_id = get_device_id(mv_device_name, sp_client.clone());
-                    sp_client.volume(payload.vol, device_id.as_deref()).unwrap();
-                    shutdown()
+                    match sp_client.volume(payload.vol, device_id.as_deref()) {
+                        Ok(_) => generate_response(false),
+                        Err(_) => generate_response(true),
+                    }
                 }
             }),
         )
