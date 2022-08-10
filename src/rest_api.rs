@@ -10,20 +10,18 @@ use librespot_core::{
 };
 use librespot_playback::player::PlayerEvent;
 use log::{error, info};
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::StatusCode;
 use rspotify::{
     model::{
-        offset::Offset, AlbumId, ArtistId, EpisodeId, IdError, PlayableItem, PlaylistId,
-        RepeatState, SearchType, ShowId, TrackId, Type,
+        offset::Offset, AlbumId, ArtistId, EpisodeId, IdError, PlaylistId, RepeatState, SearchType,
+        ShowId, TrackId, Type,
     },
     prelude::*,
     AuthCodeSpotify, Token as RspotifyToken,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::net::Shutdown;
-use std::{collections::HashMap, env, pin::Pin, sync::Arc};
+use std::{env, pin::Pin, sync::Arc};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use axum::{self, routing, Json};
@@ -251,19 +249,25 @@ async fn repeat(
 }
 
 async fn search(query: String, sp_client: Arc<AuthCodeSpotify>) -> Json<Value> {
-    let res = sp_client
+    let tracks = sp_client
         .search(&query, &SearchType::Track, None, None, Some(6), None)
-        .unwrap();
-    let res2 = sp_client
+        .ok();
+    //// test:
+    // let tracks: Option<SearchResult> = Err(ClientError::Io(std::io::Error::new(
+    //     std::io::ErrorKind::AddrInUse,
+    //     "bad error",
+    // )))
+    // .ok();
+    let albums = sp_client
         .search(&query, &SearchType::Album, None, None, Some(6), None)
-        .unwrap();
-    let res3 = sp_client
+        .ok();
+    let artists = sp_client
         .search(&query, &SearchType::Artist, None, None, Some(6), None)
-        .unwrap();
-    let res4 = sp_client
+        .ok();
+    let playlists = sp_client
         .search(&query, &SearchType::Playlist, None, None, Some(6), None)
-        .unwrap();
-    Json(json!([res, res2, res3, res4]))
+        .ok();
+    Json(json!({"tracks":tracks, "albums":albums, "artists":artists, "playlists":playlists}))
 }
 
 async fn open_ur(
@@ -453,7 +457,7 @@ async fn create_rest_server(
         .route(
             "/seek",
             routing::post({
-                let mv_device_name = device_name.clone();
+                // let mv_device_name = device_name.clone();
                 // let mv_api_token = api_token.clone();
                 let sp_client = Arc::clone(&spotify_api_client);
                 move |Json(payload): Json<SeekItem>| {
@@ -471,7 +475,7 @@ async fn create_rest_server(
         .route(
             "/get_category_playlist",
             routing::post({
-                let mv_device_name = device_name.clone();
+                // let mv_device_name = device_name.clone();
                 let sp_client = Arc::clone(&spotify_api_client);
                 move |Json(payload): Json<StringItem>| get_category_playlist(payload.val, sp_client)
             }),
