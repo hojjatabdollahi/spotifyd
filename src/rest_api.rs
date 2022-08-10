@@ -204,7 +204,7 @@ async fn playback(sp_client: Arc<AuthCodeSpotify>) -> Result<Json<Value>, AppErr
         .map_err(|_| SError::StatusError)?;
     match val {
         Some(val) => Ok(Json(json!(val))),
-        None => Err(AppError::Playback(SError::StatusError)),
+        None => Ok(Json(json!({}))),
     }
 }
 
