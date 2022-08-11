@@ -9,7 +9,7 @@ use librespot_core::{
     session::Session,
 };
 use librespot_playback::player::PlayerEvent;
-use log::{error, info};
+use log::{error, info, trace};
 use reqwest::StatusCode;
 use rspotify::{
     model::{
@@ -214,7 +214,7 @@ async fn shuffle(
     sp_client: Arc<AuthCodeSpotify>,
 ) -> Result<Json<Value>, AppError> {
     let device_id = get_device_id(device_name.clone(), sp_client.clone());
-    info!("{device_id:?}");
+    trace!("{device_id:?}");
     sp_client
         .shuffle(state, device_id.as_deref())
         .map_err(|_| SError::StatusError)?;
@@ -228,7 +228,7 @@ async fn get_category_playlist(
     let res = sp_client
         .category_playlists_manual(&category_id, None, Some(30), None)
         .map_err(|e| {
-            info!("{e:?}");
+            error!("{e:?}");
             SError::StatusError
         })?;
     Ok(Json(json!(res)))
@@ -350,7 +350,8 @@ async fn open_ur(
     let uri = Uri::from_id(id_type, id).map_err(|_| AppError::Playback(SError::NotFound))?;
 
     let device_id = get_device_id(device_name, sp_client.clone());
-    let mut res;
+    trace!("device id: {device_id:?}");
+    let res;
     match uri {
         Uri::Playable(id) => {
             res = sp_client.start_uris_playback(
@@ -359,14 +360,24 @@ async fn open_ur(
                 Some(Offset::for_position(0)),
                 None,
             );
+            trace!("{res:?}");
         }
+
         Uri::Context(id) => {
-            res = sp_client.start_context_playback(
-                &id,
-                device_id.as_deref(),
-                Some(Offset::for_position(0)),
-                None,
-            );
+            match id_type {
+                Type::Artist => {
+                    res = sp_client.start_context_playback(&id, device_id.as_deref(), None, None);
+                }
+                _ => {
+                    res = sp_client.start_context_playback(
+                        &id,
+                        device_id.as_deref(),
+                        Some(Offset::for_position(0)),
+                        None,
+                    );
+                }
+            }
+            trace!("{res:?}");
         }
     }
     if res.is_err() {
@@ -420,7 +431,7 @@ async fn create_rest_server(
     device_name: String,
     mut event_rx: UnboundedReceiver<PlayerEvent>,
 ) {
-    info!("Hello");
+    trace!("creating rest server");
     let app = axum::Router::new()
         .route(
             "/shutdown",
