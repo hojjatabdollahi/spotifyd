@@ -8,6 +8,7 @@ use librespot_core::{
     mercury::MercuryError,
     session::Session,
 };
+
 use librespot_playback::player::PlayerEvent;
 use log::{error, info, trace};
 use reqwest::StatusCode;
@@ -439,6 +440,26 @@ async fn create_rest_server(
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.shutdown();
+                    generate_response(false)
+                }
+            }),
+        )
+        .route(
+            "/play",
+            routing::get({
+                let local_spirc = Arc::clone(&spirc);
+                move || {
+                    local_spirc.play();
+                    generate_response(false)
+                }
+            }),
+        )
+        .route(
+            "/pause",
+            routing::get({
+                let local_spirc = Arc::clone(&spirc);
+                move || {
+                    local_spirc.pause();
                     generate_response(false)
                 }
             }),

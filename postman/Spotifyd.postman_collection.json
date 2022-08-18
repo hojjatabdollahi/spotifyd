@@ -67,7 +67,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\"pos\": 3000}",
+							"raw": "{\"pos\": 30000}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -85,6 +85,40 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "Play",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{local_spotifyd_url}}/play",
+							"host": [
+								"{{local_spotifyd_url}}"
+							],
+							"path": [
+								"play"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Pause",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{local_spotifyd_url}}/pause",
+							"host": [
+								"{{local_spotifyd_url}}"
+							],
+							"path": [
+								"pause"
+							]
+						}
+					},
+					"response": []
 				}
 			]
 		},
@@ -95,7 +129,7 @@
 				"header": [],
 				"body": {
 					"mode": "raw",
-					"raw": "{\"val\": \"track\"}",
+					"raw": "{\"val\": \"off\"}",
 					"options": {
 						"raw": {
 							"language": "json"
@@ -276,7 +310,7 @@
 				"header": [],
 				"body": {
 					"mode": "raw",
-					"raw": "{\"uri\": \"spotify:album:2hK70fCNOlYgTg0sQMzPbj\"}",
+					"raw": "{\"uri\": \"spotify:album:0MJ0aPj6bqlAzC93Ci5FyG\"}",
 					"options": {
 						"raw": {
 							"language": "json"
