@@ -20,7 +20,7 @@ use librespot_playback::{
     mixer::Mixer,
     player::{Player, PlayerEvent},
 };
-use log::error;
+use log::{error, info};
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -91,12 +91,14 @@ fn new_rest_server(
     spirc: Arc<Spirc>,
     device_name: String,
     event_rx: UnboundedReceiver<PlayerEvent>,
+    event_tx_something: Option<UnboundedSender<()>>,
 ) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
     Some(Box::pin(RestServer::new(
         session,
         spirc,
         device_name,
         event_rx,
+        event_tx_something,
     )))
 }
 
@@ -121,6 +123,7 @@ pub(crate) struct MainLoopState {
     pub(crate) use_rest: bool,
     #[cfg(feature = "rest_api")]
     pub(crate) rest_event_tx: Option<UnboundedSender<PlayerEvent>>,
+    pub(crate) rest_rx_got_something: Option<UnboundedReceiver<()>>,
 }
 
 impl Future for MainLoopState {
@@ -128,6 +131,7 @@ impl Future for MainLoopState {
 
     fn poll(mut self: Pin<&mut MainLoopState>, cx: &mut Context<'_>) -> Poll<()> {
         loop {
+            info!("1");
             if let Poll::Ready(Some(creds)) = self
                 .as_mut()
                 .librespot_connection
@@ -144,6 +148,7 @@ impl Future for MainLoopState {
                     Box::pin(Session::connect(session_config, creds, cache, false));
             }
 
+            info!("2");
             if let Some(mut child) = self.running_event_program.take() {
                 match child.try_wait() {
                     // Still running...
@@ -154,6 +159,8 @@ impl Future for MainLoopState {
                     Ok(Some(_)) => (),
                 }
             }
+
+            info!("3");
             if self.running_event_program.is_none() {
                 if let Some(ref mut player_event_channel) = self.spotifyd_state.player_event_channel
                 {
@@ -176,16 +183,28 @@ impl Future for MainLoopState {
                 }
             }
 
+            info!("4");
             if let Some(ref mut fut) = self.spotifyd_state.dbus_mpris_server {
                 let _ = fut.as_mut().poll(cx);
             }
 
+            info!("5");
+            info!("before rest server");
             if let Some(ref mut fut) = self.spotifyd_state.rest_server {
+                info!("before rest poll ");
                 let _ = fut.as_mut().poll(cx);
             }
 
+            if let Some(ref mut f) = self.rest_rx_got_something {
+                f.poll_recv(cx);
+            }
+
+            info!("after rest server");
+
+            info!("6");
             if let Poll::Ready(Ok(session)) = self.librespot_connection.connection.as_mut().poll(cx)
             {
+                info!("if 1");
                 let mixer = (self.audio_setup.mixer)();
                 let audio_filter = mixer.get_soft_volume();
                 self.librespot_connection.connection = Box::pin(futures::future::pending());
@@ -234,12 +253,16 @@ impl Future for MainLoopState {
                 #[cfg(feature = "rest_api")]
                 if self.use_rest {
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    let (tx_rest_something, rx_rest_something) =
+                        tokio::sync::mpsc::unbounded_channel();
                     self.rest_event_tx = Some(tx);
+                    self.rest_rx_got_something = Some(rx_rest_something);
                     self.spotifyd_state.rest_server = new_rest_server(
                         session.0.clone(),
                         shared_spirc.clone(),
                         self.spotifyd_state.device_name.clone(),
                         rx,
+                        Some(tx_rest_something),
                     );
                 }
             } else if self
@@ -249,6 +272,7 @@ impl Future for MainLoopState {
                 .poll(cx)
                 .is_ready()
             {
+                info!("if 2");
                 if !self.spotifyd_state.shutting_down {
                     if let Some(ref spirc) = self.librespot_connection.spirc {
                         spirc.shutdown();
@@ -262,8 +286,11 @@ impl Future for MainLoopState {
                 .as_mut()
                 .map(|ref mut st| st.as_mut().poll(cx))
             {
+                info!("if 3");
                 return Poll::Ready(());
             } else {
+                info!("if 4");
+                info!("return pending for some reason");
                 return Poll::Pending;
             }
         }

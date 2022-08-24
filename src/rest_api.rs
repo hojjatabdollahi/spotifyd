@@ -38,6 +38,7 @@ pub struct RestServer {
     device_name: String,
     event_rx: UnboundedReceiver<PlayerEvent>,
     event_tx: Option<UnboundedSender<PlayerEvent>>,
+    event_tx_something: Arc<UnboundedSender<()>>,
 }
 
 const CLIENT_ID: &str = "2c1ea588dfbc4a989e2426f8385297c3";
@@ -54,6 +55,7 @@ impl RestServer {
         spirc: Arc<Spirc>,
         device_name: String,
         event_rx: UnboundedReceiver<PlayerEvent>,
+        event_tx_something: Option<UnboundedSender<()>>,
     ) -> RestServer {
         RestServer {
             session,
@@ -65,6 +67,7 @@ impl RestServer {
             device_name,
             event_rx,
             event_tx: None,
+            event_tx_something: Arc::new(event_tx_something.unwrap()),
         }
     }
 
@@ -81,6 +84,7 @@ impl Future for RestServer {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        info!("INSIDE THE POLL FOR REST");
         if self.event_tx.is_some() {
             if let Poll::Ready(Some(msg)) = self.event_rx.poll_recv(cx) {
                 self.event_tx.as_ref().unwrap().send(msg).unwrap();
@@ -118,6 +122,7 @@ impl Future for RestServer {
                         self.event_tx = Some(tx);
                         self.rest_future = Some(Box::pin(create_rest_server(
                             Arc::clone(&self.spotify_client),
+                            Arc::clone(&self.event_tx_something),
                             self.spirc.clone(),
                             self.device_name.clone(),
                             rx,
@@ -148,6 +153,7 @@ impl Future for RestServer {
             }
         }
 
+        info!("pending rest");
         Poll::Pending
     }
 }
@@ -253,7 +259,12 @@ async fn repeat(
     Ok(Json(json!({"res": "done"})))
 }
 
-async fn search(query: String, sp_client: Arc<AuthCodeSpotify>) -> Json<Value> {
+async fn search(
+    query: String,
+    sp_client: Arc<AuthCodeSpotify>,
+    tx_copy: Arc<UnboundedSender<()>>,
+) -> Json<Value> {
+    tx_copy.send(());
     let tracks = sp_client
         .search(&query, &SearchType::Track, None, None, Some(6), None)
         .ok();
@@ -428,6 +439,7 @@ fn get_device_id(mv_device_name: String, sp_client: Arc<AuthCodeSpotify>) -> Opt
 async fn create_rest_server(
     // api_token: RspotifyToken,
     spotify_api_client: Arc<AuthCodeSpotify>,
+    mut tx_something: Arc<UnboundedSender<()>>,
     spirc: Arc<Spirc>,
     device_name: String,
     mut event_rx: UnboundedReceiver<PlayerEvent>,
@@ -541,8 +553,9 @@ async fn create_rest_server(
         .route(
             "/search",
             routing::post({
+                let tx_copy: Arc<UnboundedSender<()>> = Arc::clone(&tx_something);
                 let sp_client = Arc::clone(&spotify_api_client);
-                move |Json(payload): Json<SearchItem>| search(payload.keyword, sp_client)
+                move |Json(payload): Json<SearchItem>| search(payload.keyword, sp_client, tx_copy)
             }),
         )
         .route(

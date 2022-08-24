@@ -151,6 +151,7 @@ pub(crate) fn initial_state(config: config::SpotifydConfig) -> main_loop::MainLo
         mpris_event_tx: None,
         #[cfg(feature = "rest_api")]
         rest_event_tx: None,
+        rest_rx_got_something: None,
     }
 }
 
