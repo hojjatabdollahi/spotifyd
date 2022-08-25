@@ -91,7 +91,7 @@ fn new_rest_server(
     spirc: Arc<Spirc>,
     device_name: String,
     event_rx: UnboundedReceiver<PlayerEvent>,
-    event_tx_something: Option<UnboundedSender<()>>,
+    event_tx_something: UnboundedSender<String>,
 ) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
     Some(Box::pin(RestServer::new(
         session,
@@ -123,7 +123,7 @@ pub(crate) struct MainLoopState {
     pub(crate) use_rest: bool,
     #[cfg(feature = "rest_api")]
     pub(crate) rest_event_tx: Option<UnboundedSender<PlayerEvent>>,
-    pub(crate) rest_rx_got_something: Option<UnboundedReceiver<()>>,
+    pub(crate) rest_rx_got_something: Option<UnboundedReceiver<String>>,
 }
 
 impl Future for MainLoopState {
@@ -195,9 +195,33 @@ impl Future for MainLoopState {
                 let _ = fut.as_mut().poll(cx);
             }
 
+            info!("rx_something");
             if let Some(ref mut f) = self.rest_rx_got_something {
-                f.poll_recv(cx);
+                info!("rx_something is something");
+                while let Poll::Ready(a) = f.poll_recv(cx) {
+                    info!("rx_something returned: {a:?}");
+                }
+                // match f.poll_recv(cx) {
+                //     Poll::Ready(a) => {
+                //         info!("rx_something returned: {a:?}");
+                //     }
+                //     Poll::Pending => {
+                //         info!("rx_something is pending");
+                //     }
+                // }
             }
+            // info!("rx_something");
+            // if let Some(ref mut f) = self.rest_rx_got_something {
+            //     info!("rx_something is something");
+            //     match f.poll_recv(cx) {
+            //         Poll::Ready(a) => {
+            //             info!("rx_something returned: {a:?}");
+            //         }
+            //         Poll::Pending => {
+            //             info!("rx_something is pending");
+            //         }
+            //     }
+            // }
 
             info!("after rest server");
 
@@ -262,7 +286,7 @@ impl Future for MainLoopState {
                         shared_spirc.clone(),
                         self.spotifyd_state.device_name.clone(),
                         rx,
-                        Some(tx_rest_something),
+                        tx_rest_something,
                     );
                 }
             } else if self

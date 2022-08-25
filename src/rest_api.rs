@@ -38,7 +38,7 @@ pub struct RestServer {
     device_name: String,
     event_rx: UnboundedReceiver<PlayerEvent>,
     event_tx: Option<UnboundedSender<PlayerEvent>>,
-    event_tx_something: Arc<UnboundedSender<()>>,
+    event_tx_something: Arc<UnboundedSender<String>>,
 }
 
 const CLIENT_ID: &str = "2c1ea588dfbc4a989e2426f8385297c3";
@@ -55,29 +55,20 @@ impl RestServer {
         spirc: Arc<Spirc>,
         device_name: String,
         event_rx: UnboundedReceiver<PlayerEvent>,
-        event_tx_something: Option<UnboundedSender<()>>,
+        event_tx_something: UnboundedSender<String>,
     ) -> RestServer {
         RestServer {
             session,
             spirc,
-            // api_token: RspotifyToken::default(),
             spotify_client: Default::default(),
             token_request: None,
             rest_future: None,
             device_name,
             event_rx,
             event_tx: None,
-            event_tx_something: Arc::new(event_tx_something.unwrap()),
+            event_tx_something: Arc::new(event_tx_something),
         }
     }
-
-    // fn is_token_expired(&self) -> bool {
-    //     let now: DateTime<Utc> = Utc::now();
-    //     match self.api_token.expires_at {
-    //         Some(expires_at) => now.timestamp() > expires_at - 100,
-    //         None => true,
-    //     }
-    // }
 }
 
 impl Future for RestServer {
@@ -94,12 +85,17 @@ impl Future for RestServer {
             Some(ref token) => token.is_expired(),
             None => true,
         };
+        info!("Needs token? {needs_token:?}");
 
         if needs_token {
+            info!("Trying to renew token");
             if let Some(mut fut) = self.token_request.take() {
                 if let Poll::Ready(token) = fut.as_mut().poll(cx) {
                     let token = match token {
-                        Ok(token) => token,
+                        Ok(token) => {
+                            info!("Got a new token {token:?}");
+                            token
+                        }
                         Err(_) => {
                             error!("failed to request a token for the web API");
                             // shutdown DBus-Server
@@ -108,6 +104,7 @@ impl Future for RestServer {
                     };
 
                     let expires_in = Duration::seconds(token.expires_in as i64);
+                    info!("expires in {expires_in:?} seconds");
                     let api_token = RspotifyToken {
                         access_token: token.access_token,
                         expires_in,
@@ -116,6 +113,7 @@ impl Future for RestServer {
                     };
 
                     if self.rest_future.is_none() {
+                        info!("Rest future is none");
                         self.spotify_client = Arc::new(AuthCodeSpotify::from_token(api_token));
 
                         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -128,12 +126,15 @@ impl Future for RestServer {
                             rx,
                         )));
                     } else {
+                        info!("rest future is not none");
                         *self.spotify_client.get_token().lock().unwrap() = Some(api_token);
                     }
                 } else {
+                    info!("token request is not ready yet");
                     self.token_request = Some(fut);
                 }
             } else {
+                info!("create a new future to use to get tokens");
                 self.token_request = Some(Box::pin({
                     let sess = self.session.clone();
                     // This is more meant as a fast hotfix than anything else!
@@ -205,7 +206,18 @@ impl IntoResponse for AppError {
     }
 }
 
-async fn playback(sp_client: Arc<AuthCodeSpotify>) -> Result<Json<Value>, AppError> {
+async fn playback(
+    sp_client: Arc<AuthCodeSpotify>,
+    tx_copy: Arc<UnboundedSender<String>>,
+) -> Result<Json<Value>, AppError> {
+    match tx_copy.send("Getting Playback".to_string()) {
+        Ok(_) => {
+            info!("Getting Playback SENT");
+        }
+        Err(_) => {
+            info!("Getting Playback ERROR");
+        }
+    }
     let val = sp_client
         .current_playback(None, None::<Vec<_>>)
         .map_err(|_| SError::StatusError)?;
@@ -219,7 +231,16 @@ async fn shuffle(
     state: bool,
     device_name: String,
     sp_client: Arc<AuthCodeSpotify>,
+    tx_copy: Arc<UnboundedSender<String>>,
 ) -> Result<Json<Value>, AppError> {
+    match tx_copy.send("Shuffling".to_string()) {
+        Ok(_) => {
+            info!("shuffle is sent");
+        }
+        Err(_) => {
+            info!("shuffle ERROR");
+        }
+    }
     let device_id = get_device_id(device_name.clone(), sp_client.clone());
     trace!("{device_id:?}");
     sp_client
@@ -231,7 +252,16 @@ async fn shuffle(
 async fn get_category_playlist(
     category_id: String,
     sp_client: Arc<AuthCodeSpotify>,
+    tx_copy: Arc<UnboundedSender<String>>,
 ) -> Result<Json<Value>, AppError> {
+    match tx_copy.send("Getting category playlist".to_string()) {
+        Ok(_) => {
+            info!("Getting category playlist is sent");
+        }
+        Err(_) => {
+            info!("Getting category playlist ERROR");
+        }
+    }
     let res = sp_client
         .category_playlists_manual(&category_id, None, Some(30), None)
         .map_err(|e| {
@@ -245,7 +275,16 @@ async fn repeat(
     payload_state: String,
     device_name: String,
     sp_client: Arc<AuthCodeSpotify>,
+    tx_copy: Arc<UnboundedSender<String>>,
 ) -> Result<Json<Value>, AppError> {
+    match tx_copy.send("Repeating".to_string()) {
+        Ok(_) => {
+            info!("Repeat is sent");
+        }
+        Err(_) => {
+            info!("Repeat ERROR");
+        }
+    }
     let state = match payload_state.as_str() {
         "track" => RepeatState::Track,
         "context" => RepeatState::Context,
@@ -262,9 +301,16 @@ async fn repeat(
 async fn search(
     query: String,
     sp_client: Arc<AuthCodeSpotify>,
-    tx_copy: Arc<UnboundedSender<()>>,
+    tx_copy: Arc<UnboundedSender<String>>,
 ) -> Json<Value> {
-    tx_copy.send(());
+    match tx_copy.send("SEARCH IS HAPPENING".to_string()) {
+        Ok(_) => {
+            info!("SEARCH WAS SENT");
+        }
+        Err(_) => {
+            info!("SEARCH ERROR");
+        }
+    }
     let tracks = sp_client
         .search(&query, &SearchType::Track, None, None, Some(6), None)
         .ok();
@@ -290,7 +336,16 @@ async fn open_ur(
     sp_client: Arc<AuthCodeSpotify>,
     uri: String,
     device_name: String,
+    tx_copy: Arc<UnboundedSender<String>>,
 ) -> Result<Json<Value>, AppError> {
+    match tx_copy.send("Openning URI".to_string()) {
+        Ok(_) => {
+            info!("Openning URI SENT");
+        }
+        Err(_) => {
+            info!("Openning URI ERROR");
+        }
+    }
     struct AnyContextId(Box<dyn PlayContextId>);
 
     impl Id for AnyContextId {
@@ -439,7 +494,7 @@ fn get_device_id(mv_device_name: String, sp_client: Arc<AuthCodeSpotify>) -> Opt
 async fn create_rest_server(
     // api_token: RspotifyToken,
     spotify_api_client: Arc<AuthCodeSpotify>,
-    mut tx_something: Arc<UnboundedSender<()>>,
+    tx_something: Arc<UnboundedSender<String>>,
     spirc: Arc<Spirc>,
     device_name: String,
     mut event_rx: UnboundedReceiver<PlayerEvent>,
@@ -512,8 +567,10 @@ async fn create_rest_server(
                 // let mv_device_name = device_name.clone();
                 // let mv_api_token = api_token.clone();
                 let sp_client = Arc::clone(&spotify_api_client);
+                let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
                 move |Json(payload): Json<SeekItem>| {
                     // let sp = create_spotify_api(&mv_api_token);
+                    tx_copy.send("Seeking".to_string());
                     info!("pos: {}", payload.pos);
                     if let Ok(Some(playing)) = sp_client.current_playback(None, None::<Vec<_>>) {
                         info!("current pos: {:?}", playing.progress);
@@ -529,7 +586,10 @@ async fn create_rest_server(
             routing::post({
                 // let mv_device_name = device_name.clone();
                 let sp_client = Arc::clone(&spotify_api_client);
-                move |Json(payload): Json<StringItem>| get_category_playlist(payload.val, sp_client)
+                let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
+                move |Json(payload): Json<StringItem>| {
+                    get_category_playlist(payload.val, sp_client, tx_copy)
+                }
             }),
         )
         .route(
@@ -537,8 +597,9 @@ async fn create_rest_server(
             routing::post({
                 let sp_client = Arc::clone(&spotify_api_client);
                 let mv_device_name = device_name.clone();
+                let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
                 move |Json(payload): Json<StringItem>| {
-                    repeat(payload.val, mv_device_name, sp_client)
+                    repeat(payload.val, mv_device_name, sp_client, tx_copy)
                 }
             }),
         )
@@ -547,13 +608,16 @@ async fn create_rest_server(
             routing::post({
                 let mv_device_name = device_name.clone();
                 let sp_client = Arc::clone(&spotify_api_client);
-                move |Json(payload): Json<BoolItem>| shuffle(payload.val, mv_device_name, sp_client)
+                let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
+                move |Json(payload): Json<BoolItem>| {
+                    shuffle(payload.val, mv_device_name, sp_client, tx_copy)
+                }
             }),
         )
         .route(
             "/search",
             routing::post({
-                let tx_copy: Arc<UnboundedSender<()>> = Arc::clone(&tx_something);
+                let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
                 let sp_client = Arc::clone(&spotify_api_client);
                 move |Json(payload): Json<SearchItem>| search(payload.keyword, sp_client, tx_copy)
             }),
@@ -562,7 +626,8 @@ async fn create_rest_server(
             "/player_status",
             routing::get({
                 let sp_client = Arc::clone(&spotify_api_client);
-                move || playback(sp_client)
+                let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
+                move || playback(sp_client, tx_copy)
             }),
         )
         .route(
@@ -570,8 +635,10 @@ async fn create_rest_server(
             routing::get({
                 let mv_device_name = device_name.clone();
                 let sp_client = Arc::clone(&spotify_api_client);
+                let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
                 move || match get_device_id(mv_device_name, sp_client.clone()) {
                     Some(device_id) => {
+                        tx_copy.send("Transfering playback".to_string());
                         let _ = sp_client.transfer_playback(&device_id, Some(false));
                         generate_response(false)
                     }
@@ -584,8 +651,10 @@ async fn create_rest_server(
             routing::post({
                 let mv_device_name = device_name.clone();
                 let sp_client = Arc::clone(&spotify_api_client);
+                let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
                 move |Json(payload): Json<VolumeItem>| {
                     let device_id = get_device_id(mv_device_name, sp_client.clone());
+                    tx_copy.send("Changing volume".to_string());
                     match sp_client.volume(payload.vol, device_id.as_deref()) {
                         Ok(_) => generate_response(false),
                         Err(_) => generate_response(true),
@@ -598,7 +667,10 @@ async fn create_rest_server(
             routing::post({
                 let mv_device_name = device_name.clone();
                 let sp_client = Arc::clone(&spotify_api_client);
-                move |Json(payload): Json<UriItem>| open_ur(sp_client, payload.uri, mv_device_name)
+                let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
+                move |Json(payload): Json<UriItem>| {
+                    open_ur(sp_client, payload.uri, mv_device_name, tx_copy)
+                }
             }),
         );
     let w = axum::Server::bind(&"0.0.0.0:3000".parse().unwrap()).serve(app.into_make_service());
