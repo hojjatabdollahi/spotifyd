@@ -302,7 +302,7 @@ async fn search(
     query: String,
     sp_client: Arc<AuthCodeSpotify>,
     tx_copy: Arc<UnboundedSender<String>>,
-) -> Json<Value> {
+) -> Result<Json<Value>, AppError> {
     match tx_copy.send("SEARCH IS HAPPENING".to_string()) {
         Ok(_) => {
             info!("SEARCH WAS SENT");
@@ -313,23 +313,31 @@ async fn search(
     }
     let tracks = sp_client
         .search(&query, &SearchType::Track, None, None, Some(6), None)
-        .ok();
-    //// test:
-    // let tracks: Option<SearchResult> = Err(ClientError::Io(std::io::Error::new(
-    //     std::io::ErrorKind::AddrInUse,
-    //     "bad error",
-    // )))
-    // .ok();
+        .map_err(|e| {
+            error!("{e:?}");
+            SError::StatusError
+        })?;
     let albums = sp_client
         .search(&query, &SearchType::Album, None, None, Some(6), None)
-        .ok();
+        .map_err(|e| {
+            error!("{e:?}");
+            SError::StatusError
+        })?;
     let artists = sp_client
         .search(&query, &SearchType::Artist, None, None, Some(6), None)
-        .ok();
+        .map_err(|e| {
+            error!("{e:?}");
+            SError::StatusError
+        })?;
     let playlists = sp_client
         .search(&query, &SearchType::Playlist, None, None, Some(6), None)
-        .ok();
-    Json(json!({"tracks":tracks, "albums":albums, "artists":artists, "playlists":playlists}))
+        .map_err(|e| {
+            error!("{e:?}");
+            SError::StatusError
+        })?;
+    Ok(Json(
+        json!({"tracks":tracks, "albums":albums, "artists":artists, "playlists":playlists}),
+    ))
 }
 
 async fn open_ur(
