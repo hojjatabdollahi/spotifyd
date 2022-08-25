@@ -12,6 +12,7 @@ use librespot_core::{
 use librespot_playback::player::PlayerEvent;
 use log::{error, info, trace};
 use reqwest::StatusCode;
+use rspotify::ClientError;
 use rspotify::{
     model::{
         offset::Offset, AlbumId, ArtistId, EpisodeId, IdError, PlaylistId, RepeatState, SearchType,
@@ -174,6 +175,8 @@ enum SError {
     #[allow(dead_code)]
     StatusError,
     #[allow(dead_code)]
+    AuthError,
+    #[allow(dead_code)]
     InvalidUsername,
 }
 enum AppError {
@@ -193,6 +196,7 @@ impl IntoResponse for AppError {
             AppError::Playback(SError::StatusError) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get the data")
             }
+            AppError::Playback(SError::AuthError) => (StatusCode::UNAUTHORIZED, "Unauthorized"),
             AppError::Playback(SError::InvalidUsername) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "Invalid username")
             }
@@ -220,7 +224,7 @@ async fn playback(
     }
     let val = sp_client
         .current_playback(None, None::<Vec<_>>)
-        .map_err(|_| SError::StatusError)?;
+        .map_err(|e| get_error(e))?;
     match val {
         Some(val) => Ok(Json(json!(val))),
         None => Ok(Json(json!({}))),
@@ -245,7 +249,7 @@ async fn shuffle(
     trace!("{device_id:?}");
     sp_client
         .shuffle(state, device_id.as_deref())
-        .map_err(|_| SError::StatusError)?;
+        .map_err(|e| get_error(e))?;
     Ok(Json(json!({"res": "done"})))
 }
 
@@ -264,10 +268,7 @@ async fn get_category_playlist(
     }
     let res = sp_client
         .category_playlists_manual(&category_id, None, Some(30), None)
-        .map_err(|e| {
-            error!("{e:?}");
-            SError::StatusError
-        })?;
+        .map_err(|e| get_error(e))?;
     Ok(Json(json!(res)))
 }
 
@@ -294,8 +295,16 @@ async fn repeat(
     let device_id = get_device_id(device_name, sp_client.clone());
     sp_client
         .repeat(&state, device_id.as_deref())
-        .map_err(|_| SError::StatusError)?;
+        .map_err(|e| get_error(e))?;
     Ok(Json(json!({"res": "done"})))
+}
+
+fn get_error(e: ClientError) -> SError {
+    error!("{e:?}");
+    match e {
+        rspotify::ClientError::Http(_) => SError::AuthError,
+        _ => SError::StatusError,
+    }
 }
 
 async fn search(
@@ -313,28 +322,16 @@ async fn search(
     }
     let tracks = sp_client
         .search(&query, &SearchType::Track, None, None, Some(6), None)
-        .map_err(|e| {
-            error!("{e:?}");
-            SError::StatusError
-        })?;
+        .map_err(|e| get_error(e))?;
     let albums = sp_client
         .search(&query, &SearchType::Album, None, None, Some(6), None)
-        .map_err(|e| {
-            error!("{e:?}");
-            SError::StatusError
-        })?;
+        .map_err(|e| get_error(e))?;
     let artists = sp_client
         .search(&query, &SearchType::Artist, None, None, Some(6), None)
-        .map_err(|e| {
-            error!("{e:?}");
-            SError::StatusError
-        })?;
+        .map_err(|e| get_error(e))?;
     let playlists = sp_client
         .search(&query, &SearchType::Playlist, None, None, Some(6), None)
-        .map_err(|e| {
-            error!("{e:?}");
-            SError::StatusError
-        })?;
+        .map_err(|e| get_error(e))?;
     Ok(Json(
         json!({"tracks":tracks, "albums":albums, "artists":artists, "playlists":playlists}),
     ))
@@ -404,13 +401,11 @@ async fn open_ur(
 
     let mut chars = uri
         .strip_prefix("spotify")
-        // .ok_or_else(|| MethodErr::invalid_arg(&uri))?
         .ok_or_else(|| AppError::Playback(SError::NotFound))?
         .chars();
 
     let sep = match chars.next() {
         Some(ch) if ch == '/' || ch == ':' => ch,
-        // _ => return Err(MethodErr::invalid_arg(&uri)),
         _ => return Err(AppError::Playback(SError::NotFound)),
     };
     let rest = chars.as_str();
@@ -418,10 +413,8 @@ async fn open_ur(
     let (id_type, id) = rest
         .rsplit_once(sep)
         .and_then(|(id_type, id)| Some((id_type.parse::<Type>().ok()?, id)))
-        // .ok_or_else(|| MethodErr::invalid_arg(&uri))?;
         .ok_or_else(|| AppError::Playback(SError::NotFound))?;
 
-    // let uri = Uri::from_id(id_type, id).map_err(|_| MethodErr::invalid_arg(&uri))?;
     let uri = Uri::from_id(id_type, id).map_err(|_| AppError::Playback(SError::NotFound))?;
 
     let device_id = get_device_id(device_name, sp_client.clone());
