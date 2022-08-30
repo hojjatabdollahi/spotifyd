@@ -222,6 +222,11 @@ async fn playback(
             info!("Getting Playback ERROR");
         }
     }
+    info!("CURRENT PLAYING");
+    info!("{:?}", sp_client.current_playing(None, None::<Vec<_>>));
+    info!("CURRENT USER PLAYING ITEM");
+    info!("{:?}", sp_client.current_user_playing_item());
+
     let val = sp_client
         .current_playback(None, None::<Vec<_>>)
         .map_err(|e| get_error(e))?;
@@ -637,13 +642,15 @@ async fn create_rest_server(
                 let mv_device_name = device_name.clone();
                 let sp_client = Arc::clone(&spotify_api_client);
                 let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
-                move || match get_device_id(mv_device_name, sp_client.clone()) {
-                    Some(device_id) => {
-                        tx_copy.send("Transfering playback".to_string());
-                        let _ = sp_client.transfer_playback(&device_id, Some(false));
-                        generate_response(false)
+                move || {
+                    tx_copy.send("Transfering playback".to_string());
+                    match get_device_id(mv_device_name, sp_client.clone()) {
+                        Some(device_id) => {
+                            let _ = sp_client.transfer_playback(&device_id, Some(false));
+                            generate_response(false)
+                        }
+                        None => generate_response(true),
                     }
-                    None => generate_response(true),
                 }
             }),
         )
@@ -654,8 +661,8 @@ async fn create_rest_server(
                 let sp_client = Arc::clone(&spotify_api_client);
                 let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
                 move |Json(payload): Json<VolumeItem>| {
-                    let device_id = get_device_id(mv_device_name, sp_client.clone());
                     tx_copy.send("Changing volume".to_string());
+                    let device_id = get_device_id(mv_device_name, sp_client.clone());
                     match sp_client.volume(payload.vol, device_id.as_deref()) {
                         Ok(_) => generate_response(false),
                         Err(_) => generate_response(true),
