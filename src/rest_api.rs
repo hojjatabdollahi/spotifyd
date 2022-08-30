@@ -160,9 +160,15 @@ impl Future for RestServer {
     }
 }
 
-async fn generate_response(error: bool) -> Result<Json<Value>, AppError> {
-    if error {
-        Err(AppError::Playback(SError::StatusError))
+async fn generate_response(
+    has_error: bool,
+    error: Option<AppError>,
+) -> Result<Json<Value>, AppError> {
+    if has_error {
+        match error {
+            Some(e) => Err(e),
+            None => Err(AppError::Playback(SError::StatusError)),
+        }
     } else {
         Ok(Json(json!({"res": "done"})))
     }
@@ -250,7 +256,7 @@ async fn shuffle(
             info!("shuffle ERROR");
         }
     }
-    let device_id = get_device_id(device_name.clone(), sp_client.clone());
+    let device_id = get_device_id(device_name.clone(), sp_client.clone())?;
     trace!("{device_id:?}");
     sp_client
         .shuffle(state, device_id.as_deref())
@@ -297,7 +303,7 @@ async fn repeat(
         "off" => RepeatState::Off,
         _ => RepeatState::Off,
     };
-    let device_id = get_device_id(device_name, sp_client.clone());
+    let device_id = get_device_id(device_name, sp_client.clone())?;
     sp_client
         .repeat(&state, device_id.as_deref())
         .map_err(|e| get_error(e))?;
@@ -422,7 +428,7 @@ async fn open_ur(
 
     let uri = Uri::from_id(id_type, id).map_err(|_| AppError::Playback(SError::NotFound))?;
 
-    let device_id = get_device_id(device_name, sp_client.clone());
+    let device_id = get_device_id(device_name, sp_client.clone())?;
     trace!("device id: {device_id:?}");
     let res;
     match uri {
@@ -454,9 +460,9 @@ async fn open_ur(
         }
     }
     if res.is_err() {
-        generate_response(true).await
+        generate_response(true, None).await
     } else {
-        generate_response(false).await
+        generate_response(false, None).await
     }
 }
 #[derive(Deserialize)]
@@ -489,12 +495,22 @@ struct BoolItem {
     val: bool,
 }
 
-fn get_device_id(mv_device_name: String, sp_client: Arc<AuthCodeSpotify>) -> Option<String> {
-    sp_client.device().ok().and_then(|devices| {
-        devices
-            .into_iter()
-            .find_map(|d| if d.name == mv_device_name { d.id } else { None })
-    })
+fn get_device_id(
+    mv_device_name: String,
+    sp_client: Arc<AuthCodeSpotify>,
+) -> Result<Option<String>, AppError> {
+    let a = sp_client
+        .device()
+        .map_err(|e| get_error(e))?
+        .into_iter()
+        .find_map(|d| {
+            if d.name == mv_device_name {
+                return d.id;
+            } else {
+                return None;
+            }
+        });
+    Ok(a)
 }
 
 async fn create_rest_server(
@@ -513,7 +529,7 @@ async fn create_rest_server(
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.shutdown();
-                    generate_response(false)
+                    generate_response(false, None)
                 }
             }),
         )
@@ -523,7 +539,7 @@ async fn create_rest_server(
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.play();
-                    generate_response(false)
+                    generate_response(false, None)
                 }
             }),
         )
@@ -533,7 +549,7 @@ async fn create_rest_server(
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.pause();
-                    generate_response(false)
+                    generate_response(false, None)
                 }
             }),
         )
@@ -543,7 +559,7 @@ async fn create_rest_server(
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.play_pause();
-                    generate_response(false)
+                    generate_response(false, None)
                 }
             }),
         )
@@ -553,7 +569,7 @@ async fn create_rest_server(
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.next();
-                    generate_response(false)
+                    generate_response(false, None)
                 }
             }),
         )
@@ -563,7 +579,7 @@ async fn create_rest_server(
                 let local_spirc = Arc::clone(&spirc);
                 move || {
                     local_spirc.prev();
-                    generate_response(false)
+                    generate_response(false, None)
                 }
             }),
         )
@@ -583,7 +599,7 @@ async fn create_rest_server(
                         let res = sp_client.seek_track(payload.pos, playing.device.id.as_deref());
                         info!("{res:?}");
                     }
-                    generate_response(false)
+                    generate_response(false, None)
                 }
             }),
         )
@@ -645,11 +661,21 @@ async fn create_rest_server(
                 move || {
                     tx_copy.send("Transfering playback".to_string());
                     match get_device_id(mv_device_name, sp_client.clone()) {
-                        Some(device_id) => {
-                            let _ = sp_client.transfer_playback(&device_id, Some(false));
-                            generate_response(false)
+                        Ok(Some(device_id)) => {
+                            match sp_client
+                                .transfer_playback(&device_id, Some(false))
+                                .map_err(|e| get_error(e))
+                            {
+                                Ok(_) => generate_response(false, None),
+                                Err(SError::AuthError) => generate_response(
+                                    true,
+                                    Some(AppError::Playback(SError::AuthError)),
+                                ),
+                                Err(_) => generate_response(true, None),
+                            }
                         }
-                        None => generate_response(true),
+                        Ok(None) => generate_response(true, None),
+                        Err(e) => generate_response(true, Some(e)),
                     }
                 }
             }),
@@ -662,10 +688,21 @@ async fn create_rest_server(
                 let tx_copy: Arc<UnboundedSender<String>> = Arc::clone(&tx_something);
                 move |Json(payload): Json<VolumeItem>| {
                     tx_copy.send("Changing volume".to_string());
-                    let device_id = get_device_id(mv_device_name, sp_client.clone());
-                    match sp_client.volume(payload.vol, device_id.as_deref()) {
-                        Ok(_) => generate_response(false),
-                        Err(_) => generate_response(true),
+                    match get_device_id(mv_device_name, sp_client.clone()) {
+                        Ok(device_id) => {
+                            match sp_client
+                                .volume(payload.vol, device_id.as_deref())
+                                .map_err(|e| get_error(e))
+                            {
+                                Ok(_) => generate_response(false, None),
+                                Err(SError::AuthError) => generate_response(
+                                    true,
+                                    Some(AppError::Playback(SError::AuthError)),
+                                ),
+                                Err(_) => generate_response(true, None),
+                            }
+                        }
+                        Err(e) => generate_response(true, Some(e)),
                     }
                 }
             }),
