@@ -10,7 +10,7 @@ use librespot_core::{
 };
 
 use librespot_playback::player::PlayerEvent;
-use log::{error, info, trace};
+use log::{debug, error, info, trace};
 use reqwest::StatusCode;
 use rspotify::ClientError;
 use rspotify::{
@@ -76,7 +76,7 @@ impl Future for RestServer {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        info!("INSIDE THE POLL FOR REST");
+        debug!("INSIDE THE POLL FOR REST");
         if self.event_tx.is_some() {
             if let Poll::Ready(Some(msg)) = self.event_rx.poll_recv(cx) {
                 self.event_tx.as_ref().unwrap().send(msg).unwrap();
@@ -86,7 +86,7 @@ impl Future for RestServer {
             Some(ref token) => token.is_expired(),
             None => true,
         };
-        info!("Needs token? {needs_token:?}");
+        debug!("Needs token? {needs_token:?}");
 
         if needs_token {
             info!("Trying to renew token");
@@ -114,7 +114,7 @@ impl Future for RestServer {
                     };
 
                     if self.rest_future.is_none() {
-                        info!("Rest future is none");
+                        debug!("Rest future is none");
                         self.spotify_client = Arc::new(AuthCodeSpotify::from_token(api_token));
 
                         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -127,15 +127,15 @@ impl Future for RestServer {
                             rx,
                         )));
                     } else {
-                        info!("rest future is not none");
+                        debug!("rest future is not none");
                         *self.spotify_client.get_token().lock().unwrap() = Some(api_token);
                     }
                 } else {
-                    info!("token request is not ready yet");
+                    debug!("token request is not ready yet");
                     self.token_request = Some(fut);
                 }
             } else {
-                info!("create a new future to use to get tokens");
+                debug!("create a new future to use to get tokens");
                 self.token_request = Some(Box::pin({
                     let sess = self.session.clone();
                     // This is more meant as a fast hotfix than anything else!
@@ -155,7 +155,7 @@ impl Future for RestServer {
             }
         }
 
-        info!("pending rest");
+        debug!("pending rest");
         Poll::Pending
     }
 }
@@ -222,16 +222,12 @@ async fn playback(
 ) -> Result<Json<Value>, AppError> {
     match tx_copy.send("Getting Playback".to_string()) {
         Ok(_) => {
-            info!("Getting Playback SENT");
+            debug!("Getting Playback SENT");
         }
         Err(_) => {
-            info!("Getting Playback ERROR");
+            error!("Getting Playback ERROR");
         }
     }
-    info!("CURRENT PLAYING");
-    info!("{:?}", sp_client.current_playing(None, None::<Vec<_>>));
-    info!("CURRENT USER PLAYING ITEM");
-    info!("{:?}", sp_client.current_user_playing_item());
 
     let val = sp_client
         .current_playback(None, None::<Vec<_>>)
@@ -250,10 +246,10 @@ async fn shuffle(
 ) -> Result<Json<Value>, AppError> {
     match tx_copy.send("Shuffling".to_string()) {
         Ok(_) => {
-            info!("shuffle is sent");
+            debug!("shuffle is sent");
         }
         Err(_) => {
-            info!("shuffle ERROR");
+            error!("shuffle ERROR");
         }
     }
     let device_id = get_device_id(device_name.clone(), sp_client.clone())?;
@@ -271,10 +267,10 @@ async fn get_category_playlist(
 ) -> Result<Json<Value>, AppError> {
     match tx_copy.send("Getting category playlist".to_string()) {
         Ok(_) => {
-            info!("Getting category playlist is sent");
+            debug!("Getting category playlist is sent");
         }
         Err(_) => {
-            info!("Getting category playlist ERROR");
+            error!("Getting category playlist ERROR");
         }
     }
     let res = sp_client
@@ -291,10 +287,10 @@ async fn repeat(
 ) -> Result<Json<Value>, AppError> {
     match tx_copy.send("Repeating".to_string()) {
         Ok(_) => {
-            info!("Repeat is sent");
+            debug!("Repeat is sent");
         }
         Err(_) => {
-            info!("Repeat ERROR");
+            error!("Repeat ERROR");
         }
     }
     let state = match payload_state.as_str() {
@@ -325,10 +321,10 @@ async fn search(
 ) -> Result<Json<Value>, AppError> {
     match tx_copy.send("SEARCH IS HAPPENING".to_string()) {
         Ok(_) => {
-            info!("SEARCH WAS SENT");
+            debug!("SEARCH WAS SENT");
         }
         Err(_) => {
-            info!("SEARCH ERROR");
+            error!("SEARCH ERROR");
         }
     }
     let tracks = sp_client
@@ -356,10 +352,10 @@ async fn open_ur(
 ) -> Result<Json<Value>, AppError> {
     match tx_copy.send("Openning URI".to_string()) {
         Ok(_) => {
-            info!("Openning URI SENT");
+            debug!("Openning URI SENT");
         }
         Err(_) => {
-            info!("Openning URI ERROR");
+            error!("Openning URI ERROR");
         }
     }
     struct AnyContextId(Box<dyn PlayContextId>);
@@ -593,11 +589,11 @@ async fn create_rest_server(
                 move |Json(payload): Json<SeekItem>| {
                     // let sp = create_spotify_api(&mv_api_token);
                     tx_copy.send("Seeking".to_string());
-                    info!("pos: {}", payload.pos);
+                    debug!("pos: {}", payload.pos);
                     if let Ok(Some(playing)) = sp_client.current_playback(None, None::<Vec<_>>) {
-                        info!("current pos: {:?}", playing.progress);
+                        debug!("current pos: {:?}", playing.progress);
                         let res = sp_client.seek_track(payload.pos, playing.device.id.as_deref());
-                        info!("{res:?}");
+                        debug!("{res:?}");
                     }
                     generate_response(false, None)
                 }
